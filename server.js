@@ -6,6 +6,7 @@ const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
+// Используем порт Render, если он задан, иначе 10000 для локальной разработки
 const PORT = process.env.PORT || 10000;
 
 app.use(bodyParser.json());
@@ -84,6 +85,7 @@ app.post("/api/reviews", (req, res) => {
   res.json({ success: true });
 });
 
+// --- Запуск сервера ---
 app.listen(PORT, () => {
-  console.log(`✅ Сервер запущен на порту ${PORT}`);
+  console.log(`✅ Сервер запущен на порту ${PORT} (process.env.PORT = ${process.env.PORT})`);
 });
