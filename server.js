@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 10000;
 
 app.use(bodyParser.json());
 
+// Проверка обновления сервера
 // --- Файл для хранения отзывов ---
 const reviewsFile = path.join(__dirname, "reviews.json");
 const purchasesFile = path.join(__dirname, "purchases.json");
