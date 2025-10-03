@@ -9,19 +9,17 @@ const PORT = process.env.PORT || 10000;
 
 app.use(bodyParser.json());
 
-// Проверка обновления сервера
-// --- Файл для хранения отзывов ---
+// Файлы для хранения данных
 const reviewsFile = path.join(__dirname, "reviews.json");
 const purchasesFile = path.join(__dirname, "purchases.json");
 
-// --- Убедимся, что файлы существуют ---
+// Создаем файлы, если их нет
 if (!fs.existsSync(reviewsFile)) fs.writeFileSync(reviewsFile, "[]", "utf-8");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
 // --- PayPal Webhook ---
 app.post("/webhook", async (req, res) => {
   console.log("Webhook получил событие:", JSON.stringify(req.body, null, 2));
-
   const details = req.body;
   const nickname = details.nickname || "Без ника";
 
@@ -36,7 +34,7 @@ app.post("/webhook", async (req, res) => {
   });
   fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
 
-  // Отправка уведомления в Telegram (если настроен)
+  // Telegram уведомление (опционально)
   const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
   const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -50,7 +48,7 @@ app.post("/webhook", async (req, res) => {
         }
       );
     } catch (err) {
-      console.error("Ошибка отправки Telegram уведомления:", err.message);
+      console.error("Ошибка Telegram:", err.message);
     }
   }
 
@@ -58,19 +56,16 @@ app.post("/webhook", async (req, res) => {
 });
 
 // --- API отзывов ---
-// Получение всех отзывов
 app.get("/api/reviews", (req, res) => {
   const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
   res.json(reviews);
 });
 
-// Добавление нового отзыва
 app.post("/api/reviews", (req, res) => {
   const { nickname, review } = req.body;
 
   if (!nickname || !review) return res.status(400).json({ error: "Заполните все поля" });
 
-  // Проверяем, есть ли покупка у этого никнейма
   const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
   const hasPurchase = purchases.some(p => p.nickname === nickname);
 
