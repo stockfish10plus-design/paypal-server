@@ -6,11 +6,15 @@ const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
-// Используем порт Render, если он задан, иначе 10000 для локальной разработки
 const PORT = process.env.PORT || 10000;
 
 app.use(bodyParser.json());
-app.use(cors()); // 🔹 Разрешаем запросы с Tilda
+app.use(cors());
+
+// --- Проверка, что сервер живой ---
+app.get("/", (req, res) => {
+  res.send("Сервер работает! ⚡");
+});
 
 // --- Файлы для хранения отзывов и покупок ---
 const reviewsFile = path.join(__dirname, "reviews.json");
@@ -19,43 +23,49 @@ const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(reviewsFile)) fs.writeFileSync(reviewsFile, "[]", "utf-8");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
-// --- PayPal Webhook ---
+// --- PayPal Webhook / ручная доставка ---
 app.post("/webhook", async (req, res) => {
-  console.log("Webhook получил событие:", JSON.stringify(req.body, null, 2));
+  try {
+    const details = req.body;
+    const nickname = details.nickname || "Без ника";
 
-  const details = req.body;
-  const nickname = details.nickname || "Без ника";
+    // Сохраняем покупку
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    purchases.push({
+      nickname,
+      transactionId: details.transactionId,
+      items: details.items,
+      amount: details.amount,
+      payer: details.payer,
+      date: new Date().toISOString()
+    });
+    fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
 
-  // Сохраняем покупку
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  purchases.push({
-    nickname,
-    transactionId: details.transactionId,
-    items: details.items,
-    amount: details.amount,
-    date: new Date().toISOString()
-  });
-  fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+    // Отправка Telegram уведомления
+    const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+    const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-  // Отправляем уведомление в Telegram (если настроен)
-  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+      const itemList = details.items.map(i => `- ${i.name} x${i.qty}`).join("\n");
+      const message = `💰 Новая покупка PayPal!\n` +
+                      `Покупатель: ${nickname}\n` +
+                      `Сумма: $${details.amount}\n` +
+                      `Транзакция: ${details.transactionId}\n` +
+                      `Покупка:\n${itemList}\n` +
+                      `Email: ${details.payer || "не указан"}`;
 
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    try {
-      await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-        {
-          chat_id: TELEGRAM_CHAT_ID,
-          text: `💰 Новая покупка PayPal от ${nickname}:\n${JSON.stringify(details, null, 2)}`
-        }
-      );
-    } catch (err) {
-      console.error("Ошибка отправки Telegram уведомления:", err.message);
+      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message
+      });
     }
-  }
 
-  res.status(200).send("OK");
+    console.log("Webhook обработан успешно:", nickname);
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("Ошибка в webhook:", err.message);
+    res.status(500).send("Ошибка сервера");
+  }
 });
 
 // --- API отзывов ---
