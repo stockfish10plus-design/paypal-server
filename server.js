@@ -109,6 +109,38 @@ function authMiddleware(req, res, next) {
   });
 }
 
+// --- Файлы для заказов/отзывов ---
+const purchasesFile = path.join(__dirname, "purchases.json");
+if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
+
+const reviewsFile = path.join(__dirname, "reviews.json");
+if (!fs.existsSync(reviewsFile)) fs.writeFileSync(reviewsFile, "[]", "utf-8");
+
+// 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
+function savePaymentToLocal(paymentData) {
+  try {
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    
+    // Проверяем, нет ли уже такой транзакции
+    const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
+    
+    if (existingIndex !== -1) {
+      // Обновляем существующую запись
+      purchases[existingIndex] = paymentData;
+    } else {
+      // Добавляем новую запись
+      purchases.push(paymentData);
+    }
+    
+    fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+    console.log('✅ Payment saved to local file');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error saving to local file:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
   console.log('🔄 Attempting to save to Firebase...');
@@ -164,7 +196,18 @@ async function savePaymentToFirebase(paymentData) {
     await paymentRef.set(firebaseData);
     
     console.log('✅ Successfully saved to Firebase, ID:', paymentRef.id);
-    return { success: true, paymentId: paymentRef.id };
+    
+    // 🔥 ДОБАВЛЕНО: Сохраняем также в локальный файл
+    const localSaveResult = savePaymentToLocal({
+      ...firebaseData,
+      firebaseId: paymentRef.id  // Сохраняем ID из Firebase для связи
+    });
+    
+    return { 
+      success: true, 
+      paymentId: paymentRef.id,
+      localSaved: localSaveResult.success
+    };
   } catch (error) {
     console.error('❌ Firebase save error:', error);
     console.error('❌ Error details:', error.message);
@@ -180,6 +223,7 @@ app.get("/", (req, res) => {
       test: "/api/test-firebase",
       adminPayments: "/admin/payments (requires login)",
       adminReviews: "/admin/reviews (requires login)", 
+      localPayments: "/local/payments (backup view)",
       webhook: "/webhook",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)"
@@ -206,28 +250,10 @@ app.post("/api/login", (req, res) => {
   });
 });
 
-// --- Файлы для заказов/отзывов ---
-const purchasesFile = path.join(__dirname, "purchases.json");
-if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
-
-const reviewsFile = path.join(__dirname, "reviews.json");
-if (!fs.existsSync(reviewsFile)) fs.writeFileSync(reviewsFile, "[]", "utf-8");
-
 // --- PayPal Webhook ---
 app.post("/webhook", async (req, res) => {
   const details = req.body;
   const nickname = details.nickname || "No nickname";
-
-  // Сохраняем покупку в локальный файл
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  purchases.push({
-    nickname,
-    transactionId: details.transactionId,
-    items: details.items,
-    amount: details.amount,
-    date: new Date().toISOString()
-  });
-  fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
 
   // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase с улучшенной структурой
   try {
@@ -355,6 +381,143 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
+// 🔥 ДОБАВЛЕНО: Красивый локальный просмотр покупок
+app.get("/local/payments", (req, res) => {
+  try {
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Local Payments Backup</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #4CAF50; color: white; }
+            tr:hover { background-color: #f5f5f5; }
+            .delivered { background-color: #d4edda; }
+            .pending { background-color: #fff3cd; }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+            .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
+            .last-update { text-align: center; color: #666; margin-top: 20px; }
+            .nav-links { margin-bottom: 20px; text-align: center; }
+            .nav-links a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin: 0 5px;
+            }
+            .nav-links a:hover { background: #5a6268; }
+            .nav-links a.active { background: #4CAF50; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav-links">
+                <a href="/local/payments" class="active">📁 Local Backup</a>
+                <a href="/admin/payments">👑 Admin Panel</a>
+                <a href="/">🏠 Home</a>
+            </div>
+            
+            <div class="header">
+                <h1>💳 Local Payments Backup</h1>
+                <div>
+                    <span style="margin-right: 15px;">Total: ${purchases.length} payments</span>
+                </div>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>💰 Total Revenue</h3>
+                    <p>$${purchases.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>✅ Delivered</h3>
+                    <p>${purchases.filter(p => p.delivery.delivered).length}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>📦 Pending</h3>
+                    <p>${purchases.filter(p => !p.delivery.delivered).length}</p>
+                </div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th>Buyer</th>
+                        <th>Amount</th>
+                        <th>Items</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${purchases.map(payment => {
+                      const createdAt = payment.timestamps?.createdAt;
+                      let formattedDate = 'Invalid Date';
+                      
+                      if (createdAt) {
+                        const date = new Date(createdAt);
+                        date.setHours(date.getHours() + 3);
+                        formattedDate = date.toLocaleString('ru-RU');
+                      }
+                      
+                      return `
+                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
+                        <td><strong>${payment.transactionId}</strong></td>
+                        <td>
+                            <div><strong>${payment.buyer.nickname}</strong></div>
+                            <small>${payment.buyer.email}</small>
+                        </td>
+                        <td>
+                            <strong>$${payment.amount.total}</strong>
+                            <div><small>${payment.amount.currency}</small></div>
+                        </td>
+                        <td>
+                            ${payment.items.map(item => `
+                            <div>${item.name} x${item.quantity} ($${item.subtotal || (item.price * item.quantity).toFixed(2)})</div>
+                            `).join('')}
+                            <small>Total items: ${payment.items.length}</small>
+                        </td>
+                        <td>${formattedDate}</td>
+                        <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
+                    </tr>
+                    `}).join('')}
+                    ${purchases.length === 0 ? `
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 40px;">
+                            No payments found in local backup.
+                        </td>
+                    </tr>
+                    ` : ''}
+                </tbody>
+            </table>
+            
+            <div class="last-update">
+                <p>Last updated: ${new Date().toLocaleString('ru-RU')}</p>
+                <p><small>This is a local backup view. For full management use <a href="/admin/payments">Admin Panel</a></small></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка чтения локальных данных: ' + error.message 
+    });
+  }
+});
+
 // 🔥 УПРОЩЕННЫЙ КОД ДЛЯ ОТЗЫВОВ: ЛЮБОЙ может оставить отзыв с ЛЮБЫМ именем
 app.post("/api/reviews", (req, res) => {
   const { name, review } = req.body; // 🔥 Используем name вместо nickname
@@ -399,6 +562,18 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
         ...doc.data()
       });
     });
+    
+    // 🔥 ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ ФАЙЛ при загрузке админки
+    try {
+      const localPurchases = payments.map(payment => ({
+        ...payment,
+        firebaseId: payment.id
+      }));
+      fs.writeFileSync(purchasesFile, JSON.stringify(localPurchases, null, 2));
+      console.log('✅ Local backup updated from Firebase');
+    } catch (localError) {
+      console.error('❌ Error updating local backup:', localError);
+    }
     
     const html = `
     <!DOCTYPE html>
@@ -446,6 +621,15 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             .nav a:hover { background: #5a6268; }
             .nav a.active { background: #4CAF50; }
+            .backup-link { 
+                background: #17a2b8; 
+                color: white; 
+                padding: 8px 12px; 
+                text-decoration: none; 
+                border-radius: 4px; 
+                font-size: 12px;
+                margin-left: 10px;
+            }
         </style>
     </head>
     <body>
@@ -453,6 +637,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             <div class="nav">
                 <a href="/admin/payments?token=${req.query.token}" class="active">💳 Payments</a>
                 <a href="/admin/reviews?token=${req.query.token}">⭐ Reviews</a>
+                <a href="/local/payments" class="backup-link">📁 Local Backup</a>
             </div>
             
             <div class="header">
@@ -782,12 +967,19 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       'timestamps.updatedAt': new Date()
     });
     
-    // Также обновляем в локальном файле (для совместимости)
-    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-    const order = purchases.find(p => p.transactionId === transactionId);
-    if (order) {
-      order.delivered = true;
-      fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+    // 🔥 ДОБАВЛЕНО: Также обновляем локальный файл
+    try {
+      const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+      const localPayment = purchases.find(p => p.firebaseId === paymentId || p.transactionId === transactionId);
+      if (localPayment) {
+        localPayment.delivery.delivered = true;
+        localPayment.delivery.deliveredAt = new Date();
+        localPayment.timestamps.updatedAt = new Date();
+        fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+        console.log('✅ Local backup updated for delivery status');
+      }
+    } catch (localError) {
+      console.error('❌ Error updating local backup:', localError);
     }
     
     console.log(`✅ Order ${transactionId} marked as delivered`);
@@ -840,5 +1032,6 @@ app.listen(PORT, () => {
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
+  console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
 });
