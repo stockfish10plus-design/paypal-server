@@ -31,7 +31,6 @@ console.log('==========================');
 
 // --- УЛУЧШЕННЫЙ Middleware для JWT ---
 function authMiddleware(req, res, next) {
-  // Проверяем токен в разных местах
   const tokenFromUrl = req.query.token;
   const authHeader = req.headers["authorization"];
   const tokenFromBody = req.body.token;
@@ -39,7 +38,6 @@ function authMiddleware(req, res, next) {
   const token = tokenFromUrl || (authHeader ? authHeader.split(" ")[1] : null) || tokenFromBody;
   
   if (!token) {
-    // Если токена нет, показываем страницу логина
     const loginHtml = `
     <!DOCTYPE html>
     <html>
@@ -83,7 +81,6 @@ function authMiddleware(req, res, next) {
                     const result = await response.json();
                     
                     if (result.success) {
-                        // Перенаправляем с токеном в URL
                         window.location.href = '/admin/payments?token=' + result.token;
                     } else {
                         document.getElementById('error').textContent = result.error || 'Login failed';
@@ -99,7 +96,6 @@ function authMiddleware(req, res, next) {
     return res.send(loginHtml);
   }
 
-  // Проверяем токен
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
       return res.status(403).json({ 
@@ -130,27 +126,22 @@ async function savePaymentToFirebase(paymentData) {
   try {
     const paymentRef = db.collection('payments').doc();
     
-    // 🔥 УЛУЧШЕННАЯ СТРУКТУРА ДАННЫХ
     const firebaseData = {
-      // Основная информация
       transactionId: paymentData.transactionId,
       paymentId: paymentData.paymentId,
       status: paymentData.status || 'completed',
       
-      // Информация о покупателе
       buyer: {
         nickname: paymentData.nickname,
         email: paymentData.payerEmail || 'unknown@email.com'
       },
       
-      // Финансовая информация
       amount: {
         total: paymentData.amount,
         currency: paymentData.currency || 'USD',
         items: paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0)
       },
       
-      // Товары в структурированном виде
       items: paymentData.items.map((item, index) => ({
         id: index + 1,
         name: item.name,
@@ -159,17 +150,18 @@ async function savePaymentToFirebase(paymentData) {
         subtotal: (item.price * item.qty).toFixed(2)
       })),
       
-      // Мета-данные
       timestamps: {
         createdAt: new Date(),
         updatedAt: new Date()
       },
       
-      // Статус доставки
       delivery: {
         delivered: false,
         deliveredAt: null
-      }
+      },
+      
+      // 🔥 ДОБАВЛЕНО: Флаг оставленного отзыва
+      reviewLeft: false
     };
     
     await paymentRef.set(firebaseData);
@@ -191,7 +183,8 @@ async function checkPurchaseInFirebase(nickname) {
     if (!db) {
       return { 
         hasPurchase: false, 
-        details: "Database not available" 
+        details: "Database not available",
+        canReview: false
       };
     }
     
@@ -204,27 +197,36 @@ async function checkPurchaseInFirebase(nickname) {
     snapshot.forEach(doc => {
       const data = doc.data();
       results.push({
+        id: doc.id,
         transactionId: data.transactionId,
         status: data.status,
         amount: data.amount?.total,
-        date: data.timestamps?.createdAt
+        date: data.timestamps?.createdAt,
+        reviewLeft: data.reviewLeft || false
       });
     });
     
     console.log(`🔍 Found ${results.length} transactions for ${nickname}:`, results);
     
     // Проверяем есть ли хотя бы одна успешная транзакция
-    const successfulPurchase = results.some(tx => 
+    const successfulPurchases = results.filter(tx => 
       ['completed', 'success', 'paid', 'confirmed'].includes(tx.status)
     );
     
+    const hasPurchase = successfulPurchases.length > 0;
+    
+    // 🔥 ДОБАВЛЕНО: Проверяем, оставлял ли пользователь уже отзыв
+    const hasLeftReview = successfulPurchases.some(tx => tx.reviewLeft === true);
+    const canReview = hasPurchase && !hasLeftReview;
+    
     return {
-      hasPurchase: successfulPurchase,
+      hasPurchase: hasPurchase,
+      canReview: canReview,
+      hasLeftReview: hasLeftReview,
       details: {
         totalTransactions: results.length,
-        successfulTransactions: results.filter(tx => 
-          ['completed', 'success', 'paid', 'confirmed'].includes(tx.status)
-        ).length,
+        successfulTransactions: successfulPurchases.length,
+        hasLeftReview: hasLeftReview,
         transactions: results
       }
     };
@@ -232,8 +234,39 @@ async function checkPurchaseInFirebase(nickname) {
     console.error('❌ Error checking purchase in Firebase:', error);
     return { 
       hasPurchase: false, 
+      canReview: false,
       details: `Database error: ${error.message}` 
     };
+  }
+}
+
+// 🔥 ДОБАВЛЕНО: Функция для отметки отзыва как оставленного
+async function markReviewAsLeft(nickname) {
+  try {
+    console.log(`📝 Marking review as left for: ${nickname}`);
+    
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef
+      .where('buyer.nickname', '==', nickname)
+      .where('status', 'in', ['completed', 'success', 'paid', 'confirmed'])
+      .get();
+    
+    const updates = [];
+    snapshot.forEach(doc => {
+      updates.push(
+        doc.ref.update({
+          'reviewLeft': true,
+          'timestamps.updatedAt': new Date()
+        })
+      );
+    });
+    
+    await Promise.all(updates);
+    console.log(`✅ Marked ${updates.length} payments as reviewed for ${nickname}`);
+    return { success: true, updated: updates.length };
+  } catch (error) {
+    console.error('❌ Error marking review as left:', error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -317,7 +350,7 @@ app.post("/webhook", async (req, res) => {
       console.log('✅ Payment saved to Firebase successfully');
     }
   } catch (firebaseError) {
-    console.error('�️ Ошибка при работе с Firebase:', firebaseError);
+    console.error('❌ Ошибка при работе с Firebase:', firebaseError);
   }
 
   // Форматируем товары красиво
@@ -429,7 +462,9 @@ app.get("/api/check-purchase/:nickname", async (req, res) => {
     
     res.json({
       nickname: nickname,
-      canReview: result.hasPurchase,
+      canReview: result.canReview,
+      hasPurchase: result.hasPurchase,
+      hasLeftReview: result.hasLeftReview,
       details: result.details
     });
   } catch (error) {
@@ -437,7 +472,7 @@ app.get("/api/check-purchase/:nickname", async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕННЫЙ КОД: проверка покупок в Firebase для отзывов
+// 🔥 ИСПРАВЛЕННЫЙ КОД: проверка покупок в Firebase для отзывов + ОДИН ОТЗЫВ НА ПОКУПКУ
 app.post("/api/reviews", async (req, res) => {
   const { nickname, review } = req.body;
   if (!nickname || !review) return res.status(400).json({ error: "Fill all fields" });
@@ -456,15 +491,38 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
+    // 🔥 ДОБАВЛЕНО: Проверяем, не оставлял ли пользователь уже отзыв
+    if (purchaseCheck.hasLeftReview) {
+      console.log(`❌ Review rejected: User ${nickname} already left a review`);
+      return res.status(403).json({ 
+        error: "You have already left a review for your purchase. Thank you!",
+        details: purchaseCheck.details
+      });
+    }
+
+    if (!purchaseCheck.canReview) {
+      console.log(`❌ Review rejected: User ${nickname} cannot review`);
+      return res.status(403).json({ 
+        error: "You cannot leave a review at this time",
+        details: purchaseCheck.details
+      });
+    }
+
     // Сохраняем отзыв
     const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
     reviews.push({ 
       nickname, 
       review, 
       date: new Date().toISOString(),
-      verified: true // Помечаем как проверенный отзыв
+      verified: true
     });
     fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
+
+    // 🔥 ДОБАВЛЕНО: Отмечаем в Firebase, что пользователь оставил отзыв
+    const markResult = await markReviewAsLeft(nickname);
+    if (!markResult.success) {
+      console.error('❌ Failed to mark review as left:', markResult.error);
+    }
 
     console.log(`✅ Review submitted successfully by: ${nickname}`);
     res.json({ 
@@ -539,6 +597,9 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             .nav a:hover { background: #5a6268; }
             .nav a.active { background: #4CAF50; }
+            .review-status { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
+            .review-left { background: #d4edda; color: #155724; }
+            .review-not-left { background: #fff3cd; color: #856404; }
         </style>
     </head>
     <body>
@@ -566,8 +627,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <p>${payments.filter(p => p.delivery.delivered).length}</p>
                 </div>
                 <div class="stat-card">
-                    <h3>🕐 Pending</h3>
-                    <p>${payments.filter(p => !p.delivery.delivered).length}</p>
+                    <h3>⭐ Reviews</h3>
+                    <p>${payments.filter(p => p.reviewLeft).length} / ${payments.length}</p>
                 </div>
             </div>
             
@@ -580,21 +641,26 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
+                        <th>Review</th>
                         <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${payments.map(payment => {
-                      // Форматируем дату правильно
+                      // 🔥 ИСПРАВЛЕНО: Правильное форматирование времени с учетом часового пояса
                       const createdAt = payment.timestamps.createdAt;
                       let formattedDate = 'Invalid Date';
                       
                       if (createdAt && createdAt.toDate) {
-                        // Если это Firebase Timestamp
-                        formattedDate = createdAt.toDate().toLocaleString('ru-RU');
+                        // Если это Firebase Timestamp - добавляем 3 часа для Moscow Time
+                        const date = createdAt.toDate();
+                        date.setHours(date.getHours() + 3); // Добавляем 3 часа
+                        formattedDate = date.toLocaleString('ru-RU');
                       } else if (createdAt) {
-                        // Если это обычная дата
-                        formattedDate = new Date(createdAt).toLocaleString('ru-RU');
+                        // Если это обычная дата - добавляем 3 часа
+                        const date = new Date(createdAt);
+                        date.setHours(date.getHours() + 3);
+                        formattedDate = date.toLocaleString('ru-RU');
                       }
                       
                       return `
@@ -619,6 +685,11 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
                         </td>
                         <td>
+                            <span class="review-status ${payment.reviewLeft ? 'review-left' : 'review-not-left'}">
+                                ${payment.reviewLeft ? '✅ Reviewed' : '📝 No review'}
+                            </span>
+                        </td>
+                        <td>
                             ${!payment.delivery.delivered ? 
                               `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
                                 Mark Delivered
@@ -630,7 +701,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 40px;">
+                        <td colspan="8" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -645,7 +716,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 const statusCell = document.getElementById('status-' + paymentId);
                 const row = document.getElementById('row-' + paymentId);
                 
-                // Блокируем кнопку
                 btn.disabled = true;
                 btn.textContent = 'Updating...';
                 
@@ -665,19 +735,15 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     const result = await response.json();
                     
                     if (result.success) {
-                        // Обновляем UI
                         statusCell.innerHTML = '✅ Delivered';
                         statusCell.className = 'status-delivered';
                         row.className = 'delivered';
                         btn.outerHTML = '<span style="color: #28a745;">✅ Done</span>';
-                        
-                        // Показываем уведомление
                         showNotification('Order marked as delivered!', 'success');
                     } else {
                         throw new Error(result.error);
                     }
                 } catch (error) {
-                    // Восстанавливаем кнопку при ошибке
                     btn.disabled = false;
                     btn.textContent = 'Mark Delivered';
                     showNotification('Error: ' + error.message, 'error');
@@ -690,7 +756,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             
             function showNotification(message, type) {
-                // Создаем уведомление
                 const notification = document.createElement('div');
                 notification.style.cssText = \`
                     position: fixed;
@@ -709,10 +774,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 
                 document.body.appendChild(notification);
                 
-                // Показываем
                 setTimeout(() => notification.style.opacity = '1', 100);
                 
-                // Скрываем через 3 секунды
                 setTimeout(() => {
                     notification.style.opacity = '0';
                     setTimeout(() => notification.remove(), 300);
@@ -795,19 +858,25 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                     </tr>
                 </thead>
                 <tbody>
-                    ${reviewsWithId.map(review => `
+                    ${reviewsWithId.map(review => {
+                      // 🔥 ИСПРАВЛЕНО: Время в админке отзывов тоже правильное
+                      const reviewDate = new Date(review.date);
+                      reviewDate.setHours(reviewDate.getHours() + 3); // Добавляем 3 часа
+                      const formattedDate = reviewDate.toLocaleString('ru-RU');
+                      
+                      return `
                     <tr id="review-${review.id}">
                         <td>${review.id}</td>
                         <td><strong>${review.nickname}</strong></td>
                         <td>${review.review}</td>
-                        <td>${new Date(review.date).toLocaleString('ru-RU')}</td>
+                        <td>${formattedDate}</td>
                         <td>
                             <button class="delete-btn" onclick="deleteReview(${review.id})">
                                 Delete
                             </button>
                         </td>
                     </tr>
-                    `).join('')}
+                    `}).join('')}
                     ${reviewsWithId.length === 0 ? `
                     <tr>
                         <td colspan="5" style="text-align: center; padding: 40px;">
@@ -836,7 +905,6 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                     const result = await response.json();
                     
                     if (result.success) {
-                        // Удаляем строку из таблицы
                         document.getElementById('review-' + reviewId).remove();
                         alert('Review deleted successfully!');
                     } else {
