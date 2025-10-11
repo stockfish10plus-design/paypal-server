@@ -158,10 +158,7 @@ async function savePaymentToFirebase(paymentData) {
       delivery: {
         delivered: false,
         deliveredAt: null
-      },
-      
-      // 🔥 ДОБАВЛЕНО: Флаг оставленного отзыва
-      reviewLeft: false
+      }
     };
     
     await paymentRef.set(firebaseData);
@@ -171,101 +168,6 @@ async function savePaymentToFirebase(paymentData) {
   } catch (error) {
     console.error('❌ Firebase save error:', error);
     console.error('❌ Error details:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция проверки покупок с диагностикой
-async function checkPurchaseInFirebase(nickname) {
-  try {
-    console.log(`🔍 Checking purchase for: "${nickname}"`);
-    
-    if (!db) {
-      return { 
-        hasPurchase: false, 
-        details: "Database not available",
-        canReview: false
-      };
-    }
-    
-    const paymentsRef = db.collection('payments');
-    const snapshot = await paymentsRef
-      .where('buyer.nickname', '==', nickname)
-      .get();
-    
-    const results = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      results.push({
-        id: doc.id,
-        transactionId: data.transactionId,
-        status: data.status,
-        amount: data.amount?.total,
-        date: data.timestamps?.createdAt,
-        reviewLeft: data.reviewLeft || false
-      });
-    });
-    
-    console.log(`🔍 Found ${results.length} transactions for ${nickname}:`, results);
-    
-    // Проверяем есть ли хотя бы одна успешная транзакция
-    const successfulPurchases = results.filter(tx => 
-      ['completed', 'success', 'paid', 'confirmed'].includes(tx.status)
-    );
-    
-    const hasPurchase = successfulPurchases.length > 0;
-    
-    // 🔥 ДОБАВЛЕНО: Проверяем, оставлял ли пользователь уже отзыв
-    const hasLeftReview = successfulPurchases.some(tx => tx.reviewLeft === true);
-    const canReview = hasPurchase && !hasLeftReview;
-    
-    return {
-      hasPurchase: hasPurchase,
-      canReview: canReview,
-      hasLeftReview: hasLeftReview,
-      details: {
-        totalTransactions: results.length,
-        successfulTransactions: successfulPurchases.length,
-        hasLeftReview: hasLeftReview,
-        transactions: results
-      }
-    };
-  } catch (error) {
-    console.error('❌ Error checking purchase in Firebase:', error);
-    return { 
-      hasPurchase: false, 
-      canReview: false,
-      details: `Database error: ${error.message}` 
-    };
-  }
-}
-
-// 🔥 ДОБАВЛЕНО: Функция для отметки отзыва как оставленного
-async function markReviewAsLeft(nickname) {
-  try {
-    console.log(`📝 Marking review as left for: ${nickname}`);
-    
-    const paymentsRef = db.collection('payments');
-    const snapshot = await paymentsRef
-      .where('buyer.nickname', '==', nickname)
-      .where('status', 'in', ['completed', 'success', 'paid', 'confirmed'])
-      .get();
-    
-    const updates = [];
-    snapshot.forEach(doc => {
-      updates.push(
-        doc.ref.update({
-          'reviewLeft': true,
-          'timestamps.updatedAt': new Date()
-        })
-      );
-    });
-    
-    await Promise.all(updates);
-    console.log(`✅ Marked ${updates.length} payments as reviewed for ${nickname}`);
-    return { success: true, updated: updates.length };
-  } catch (error) {
-    console.error('❌ Error marking review as left:', error);
     return { success: false, error: error.message };
   }
 }
@@ -280,8 +182,7 @@ app.get("/", (req, res) => {
       adminReviews: "/admin/reviews (requires login)", 
       webhook: "/webhook",
       login: "/api/login",
-      testPayment: "/api/test-firebase-payment (POST)",
-      checkPurchase: "/api/check-purchase/:nickname"
+      testPayment: "/api/test-firebase-payment (POST)"
     },
     status: "active",
     timestamp: new Date().toISOString()
@@ -454,81 +355,30 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
-// 🔧 ДОБАВЛЕНО: Маршрут для проверки покупок пользователя
-app.get("/api/check-purchase/:nickname", async (req, res) => {
-  try {
-    const nickname = req.params.nickname;
-    const result = await checkPurchaseInFirebase(nickname);
-    
-    res.json({
-      nickname: nickname,
-      canReview: result.canReview,
-      hasPurchase: result.hasPurchase,
-      hasLeftReview: result.hasLeftReview,
-      details: result.details
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+// 🔥 УПРОЩЕННЫЙ КОД ДЛЯ ОТЗЫВОВ: ЛЮБОЙ может оставить отзыв с ЛЮБЫМ именем
+app.post("/api/reviews", (req, res) => {
+  const { name, review } = req.body; // 🔥 Используем name вместо nickname
+  
+  if (!name || !review) {
+    return res.status(400).json({ error: "Please fill in your name and review" });
   }
-});
-
-// 🔥 ИСПРАВЛЕННЫЙ КОД: проверка покупок в Firebase для отзывов + ОДИН ОТЗЫВ НА ПОКУПКУ
-app.post("/api/reviews", async (req, res) => {
-  const { nickname, review } = req.body;
-  if (!nickname || !review) return res.status(400).json({ error: "Fill all fields" });
 
   try {
-    console.log(`📝 Attempting to submit review from: ${nickname}`);
+    console.log(`📝 New review from: ${name}`);
     
-    // Проверяем в Firebase
-    const purchaseCheck = await checkPurchaseInFirebase(nickname);
-    
-    if (!purchaseCheck.hasPurchase) {
-      console.log(`❌ Review rejected: No purchase found for ${nickname}`);
-      return res.status(403).json({ 
-        error: "You have not made a purchase or your payment is still processing",
-        details: purchaseCheck.details
-      });
-    }
-
-    // 🔥 ДОБАВЛЕНО: Проверяем, не оставлял ли пользователь уже отзыв
-    if (purchaseCheck.hasLeftReview) {
-      console.log(`❌ Review rejected: User ${nickname} already left a review`);
-      return res.status(403).json({ 
-        error: "You have already left a review for your purchase. Thank you!",
-        details: purchaseCheck.details
-      });
-    }
-
-    if (!purchaseCheck.canReview) {
-      console.log(`❌ Review rejected: User ${nickname} cannot review`);
-      return res.status(403).json({ 
-        error: "You cannot leave a review at this time",
-        details: purchaseCheck.details
-      });
-    }
-
-    // Сохраняем отзыв
+    // 🔥 ПРОСТО СОХРАНЯЕМ ОТЗЫВ БЕЗ ПРОВЕРОК
     const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
     reviews.push({ 
-      nickname, 
+      name, // 🔥 Сохраняем имя которое человек ввел в отзыве
       review, 
-      date: new Date().toISOString(),
-      verified: true
+      date: new Date().toISOString()
     });
     fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
 
-    // 🔥 ДОБАВЛЕНО: Отмечаем в Firebase, что пользователь оставил отзыв
-    const markResult = await markReviewAsLeft(nickname);
-    if (!markResult.success) {
-      console.error('❌ Failed to mark review as left:', markResult.error);
-    }
-
-    console.log(`✅ Review submitted successfully by: ${nickname}`);
+    console.log(`✅ Review submitted successfully by: ${name}`);
     res.json({ 
       success: true, 
-      message: "Review submitted successfully!",
-      verified: true
+      message: "Review submitted successfully!"
     });
   } catch (error) {
     console.error('❌ Error in review submission:', error);
@@ -550,7 +400,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
       });
     });
     
-    // 🔥 Генерируем HTML таблицу
     const html = `
     <!DOCTYPE html>
     <html>
@@ -597,9 +446,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             .nav a:hover { background: #5a6268; }
             .nav a.active { background: #4CAF50; }
-            .review-status { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
-            .review-left { background: #d4edda; color: #155724; }
-            .review-not-left { background: #fff3cd; color: #856404; }
         </style>
     </head>
     <body>
@@ -627,8 +473,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <p>${payments.filter(p => p.delivery.delivered).length}</p>
                 </div>
                 <div class="stat-card">
-                    <h3>⭐ Reviews</h3>
-                    <p>${payments.filter(p => p.reviewLeft).length} / ${payments.length}</p>
+                    <h3>📦 Pending</h3>
+                    <p>${payments.filter(p => !p.delivery.delivered).length}</p>
                 </div>
             </div>
             
@@ -641,23 +487,19 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
-                        <th>Review</th>
                         <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${payments.map(payment => {
-                      // 🔥 ИСПРАВЛЕНО: Правильное форматирование времени с учетом часового пояса
                       const createdAt = payment.timestamps.createdAt;
                       let formattedDate = 'Invalid Date';
                       
                       if (createdAt && createdAt.toDate) {
-                        // Если это Firebase Timestamp - добавляем 3 часа для Moscow Time
                         const date = createdAt.toDate();
-                        date.setHours(date.getHours() + 3); // Добавляем 3 часа
+                        date.setHours(date.getHours() + 3);
                         formattedDate = date.toLocaleString('ru-RU');
                       } else if (createdAt) {
-                        // Если это обычная дата - добавляем 3 часа
                         const date = new Date(createdAt);
                         date.setHours(date.getHours() + 3);
                         formattedDate = date.toLocaleString('ru-RU');
@@ -685,11 +527,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
                         </td>
                         <td>
-                            <span class="review-status ${payment.reviewLeft ? 'review-left' : 'review-not-left'}">
-                                ${payment.reviewLeft ? '✅ Reviewed' : '📝 No review'}
-                            </span>
-                        </td>
-                        <td>
                             ${!payment.delivery.delivered ? 
                               `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
                                 Mark Delivered
@@ -701,7 +538,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="8" style="text-align: center; padding: 40px;">
+                        <td colspan="7" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -859,15 +696,14 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                 </thead>
                 <tbody>
                     ${reviewsWithId.map(review => {
-                      // 🔥 ИСПРАВЛЕНО: Время в админке отзывов тоже правильное
                       const reviewDate = new Date(review.date);
-                      reviewDate.setHours(reviewDate.getHours() + 3); // Добавляем 3 часа
+                      reviewDate.setHours(reviewDate.getHours() + 3);
                       const formattedDate = reviewDate.toLocaleString('ru-RU');
                       
                       return `
                     <tr id="review-${review.id}">
                         <td>${review.id}</td>
-                        <td><strong>${review.nickname}</strong></td>
+                        <td><strong>${review.name}</strong></td> <!-- 🔥 Используем name вместо nickname -->
                         <td>${review.review}</td>
                         <td>${formattedDate}</td>
                         <td>
@@ -984,79 +820,16 @@ app.delete("/api/reviews/:id", authMiddleware, (req, res) => {
   res.json({ success: true, message: "Review deleted successfully" });
 });
 
-// 🔥 ДОБАВЛЕНО: Получить все платежи из Firebase
-app.get("/api/firebase-payments", authMiddleware, async (req, res) => {
-  try {
-    console.log('📊 Fetching payments from Firebase...');
-    
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Firebase not initialized' 
-      });
-    }
-    
-    const paymentsRef = db.collection('payments');
-    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
-    
-    const payments = [];
-    snapshot.forEach(doc => {
-      payments.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
-    
-    console.log(`📊 Found ${payments.length} payments in Firebase`);
-    res.json({ success: true, payments });
-  } catch (error) {
-    console.error('❌ Error fetching payments:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка получения платежей: ' + error.message 
-    });
-  }
-});
-
-// --- Получить все заказы ---
-app.get("/api/purchases", authMiddleware, (req, res) => {
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  res.json(purchases);
-});
-
-// --- Повторная отправка уведомления в Telegram ---
-app.post("/api/resend-telegram", authMiddleware, async (req, res) => {
-  const { transactionId } = req.body;
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  const order = purchases.find(p => p.transactionId === transactionId);
-  if (!order) return res.status(404).json({ error: "Order not found" });
-
-  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    const itemsText = order.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `♻️ Resent order:
-Transaction: ${order.transactionId}
-Buyer: ${order.nickname}
-Amount: $${order.amount}
-Items:
-${itemsText}`
-      }
-    );
-  }
-
-  res.json({ success: true });
-});
-
 // --- Получить все отзывы ---
 app.get("/api/reviews", (req, res) => {
   const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-  res.json(reviews);
+  // 🔥 Возвращаем отзывы с полем name вместо nickname
+  const formattedReviews = reviews.map(review => ({
+    name: review.name || review.nickname, // 🔥 Поддержка старых отзывов
+    review: review.review,
+    date: review.date
+  }));
+  res.json(formattedReviews);
 });
 
 // --- Старт сервера ---
@@ -1065,7 +838,6 @@ app.listen(PORT, () => {
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
-  console.log(`🔧 Check Purchase: GET https://paypal-server-46qg.onrender.com/api/check-purchase/ВАШ_НИКНЕЙМ`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
