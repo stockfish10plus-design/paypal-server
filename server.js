@@ -189,7 +189,8 @@ app.get("/", (req, res) => {
     message: "PayPal Server is running!",
     endpoints: {
       test: "/api/test-firebase",
-      admin: "/admin/payments (requires login)",
+      adminPayments: "/admin/payments (requires login)",
+      adminReviews: "/admin/reviews (requires login)", 
       webhook: "/webhook",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)"
@@ -365,7 +366,7 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей (с авторизацией)
+// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -415,10 +416,26 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 background: #6c757d; 
                 cursor: not-allowed; 
             }
+            .nav { margin-bottom: 20px; }
+            .nav a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin-right: 10px;
+            }
+            .nav a:hover { background: #5a6268; }
+            .nav a.active { background: #4CAF50; }
         </style>
     </head>
     <body>
         <div class="container">
+            <div class="nav">
+                <a href="/admin/payments?token=${req.query.token}" class="active">💳 Payments</a>
+                <a href="/admin/reviews?token=${req.query.token}">⭐ Reviews</a>
+            </div>
+            
             <div class="header">
                 <h1>💳 Payments Management</h1>
                 <div>
@@ -603,6 +620,139 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
   }
 });
 
+// 🔥 ДОБАВЛЕНО: Админка для управления отзывами
+app.get("/admin/reviews", authMiddleware, async (req, res) => {
+  try {
+    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+    const reviewsWithId = reviews.map((review, index) => ({
+      id: index,
+      ...review
+    }));
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reviews Management</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #0070ba; color: white; }
+            .delete-btn { 
+                background: #dc3545; 
+                color: white; 
+                padding: 6px 12px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+            }
+            .delete-btn:hover { background: #c82333; }
+            .nav { margin-bottom: 20px; }
+            .nav a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin-right: 10px;
+            }
+            .nav a:hover { background: #5a6268; }
+            .nav a.active { background: #0070ba; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav">
+                <a href="/admin/payments?token=${req.query.token}">💳 Payments</a>
+                <a href="/admin/reviews?token=${req.query.token}" class="active">⭐ Reviews</a>
+            </div>
+            
+            <h1>⭐ Reviews Management</h1>
+            <p>Total reviews: ${reviewsWithId.length}</p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User</th>
+                        <th>Review</th>
+                        <th>Date</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reviewsWithId.map(review => `
+                    <tr id="review-${review.id}">
+                        <td>${review.id}</td>
+                        <td><strong>${review.nickname}</strong></td>
+                        <td>${review.review}</td>
+                        <td>${new Date(review.date).toLocaleString('ru-RU')}</td>
+                        <td>
+                            <button class="delete-btn" onclick="deleteReview(${review.id})">
+                                Delete
+                            </button>
+                        </td>
+                    </tr>
+                    `).join('')}
+                    ${reviewsWithId.length === 0 ? `
+                    <tr>
+                        <td colspan="5" style="text-align: center; padding: 40px;">
+                            No reviews found.
+                        </td>
+                    </tr>
+                    ` : ''}
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            async function deleteReview(reviewId) {
+                if (!confirm('Are you sure you want to delete this review?')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/reviews/' + reviewId, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Удаляем строку из таблицы
+                        document.getElementById('review-' + reviewId).remove();
+                        alert('Review deleted successfully!');
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    alert('Error: ' + error.message);
+                }
+            }
+            
+            function getTokenFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('token');
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка получения отзывов: ' + error.message 
+    });
+  }
+});
+
 // --- Пометить заказ как выданный (обновленная версия) ---
 app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   const { transactionId, paymentId } = req.body;
@@ -636,6 +786,22 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       error: 'Failed to mark order as delivered: ' + error.message 
     });
   }
+});
+
+// --- Удалить отзыв (админ) ---
+app.delete("/api/reviews/:id", authMiddleware, (req, res) => {
+  const reviewId = parseInt(req.params.id);
+  const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+  
+  if (reviewId < 0 || reviewId >= reviews.length) {
+    return res.status(404).json({ error: "Review not found" });
+  }
+  
+  // Удаляем отзыв
+  reviews.splice(reviewId, 1);
+  fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
+  
+  res.json({ success: true, message: "Review deleted successfully" });
 });
 
 // 🔥 ДОБАВЛЕНО: Получить все платежи из Firebase
@@ -734,6 +900,7 @@ app.listen(PORT, () => {
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
-  console.log(`👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments`);
+  console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
+  console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
 });
