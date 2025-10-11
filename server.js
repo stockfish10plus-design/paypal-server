@@ -183,6 +183,60 @@ async function savePaymentToFirebase(paymentData) {
   }
 }
 
+// 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция проверки покупок с диагностикой
+async function checkPurchaseInFirebase(nickname) {
+  try {
+    console.log(`🔍 Checking purchase for: "${nickname}"`);
+    
+    if (!db) {
+      return { 
+        hasPurchase: false, 
+        details: "Database not available" 
+      };
+    }
+    
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef
+      .where('buyer.nickname', '==', nickname)
+      .get();
+    
+    const results = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      results.push({
+        transactionId: data.transactionId,
+        status: data.status,
+        amount: data.amount?.total,
+        date: data.timestamps?.createdAt
+      });
+    });
+    
+    console.log(`🔍 Found ${results.length} transactions for ${nickname}:`, results);
+    
+    // Проверяем есть ли хотя бы одна успешная транзакция
+    const successfulPurchase = results.some(tx => 
+      ['completed', 'success', 'paid', 'confirmed'].includes(tx.status)
+    );
+    
+    return {
+      hasPurchase: successfulPurchase,
+      details: {
+        totalTransactions: results.length,
+        successfulTransactions: results.filter(tx => 
+          ['completed', 'success', 'paid', 'confirmed'].includes(tx.status)
+        ).length,
+        transactions: results
+      }
+    };
+  } catch (error) {
+    console.error('❌ Error checking purchase in Firebase:', error);
+    return { 
+      hasPurchase: false, 
+      details: `Database error: ${error.message}` 
+    };
+  }
+}
+
 // 🔥 ДОБАВЛЕНО: Корневой маршрут
 app.get("/", (req, res) => {
   res.json({
@@ -193,7 +247,8 @@ app.get("/", (req, res) => {
       adminReviews: "/admin/reviews (requires login)", 
       webhook: "/webhook",
       login: "/api/login",
-      testPayment: "/api/test-firebase-payment (POST)"
+      testPayment: "/api/test-firebase-payment (POST)",
+      checkPurchase: "/api/check-purchase/:nickname"
     },
     status: "active",
     timestamp: new Date().toISOString()
@@ -262,7 +317,7 @@ app.post("/webhook", async (req, res) => {
       console.log('✅ Payment saved to Firebase successfully');
     }
   } catch (firebaseError) {
-    console.error('❌ Ошибка при работе с Firebase:', firebaseError);
+    console.error('�️ Ошибка при работе с Firebase:', firebaseError);
   }
 
   // Форматируем товары красиво
@@ -363,6 +418,63 @@ app.post("/api/test-firebase-payment", async (req, res) => {
       success: false, 
       error: '❌ Test error: ' + error.message 
     });
+  }
+});
+
+// 🔧 ДОБАВЛЕНО: Маршрут для проверки покупок пользователя
+app.get("/api/check-purchase/:nickname", async (req, res) => {
+  try {
+    const nickname = req.params.nickname;
+    const result = await checkPurchaseInFirebase(nickname);
+    
+    res.json({
+      nickname: nickname,
+      canReview: result.hasPurchase,
+      details: result.details
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔥 ИСПРАВЛЕННЫЙ КОД: проверка покупок в Firebase для отзывов
+app.post("/api/reviews", async (req, res) => {
+  const { nickname, review } = req.body;
+  if (!nickname || !review) return res.status(400).json({ error: "Fill all fields" });
+
+  try {
+    console.log(`📝 Attempting to submit review from: ${nickname}`);
+    
+    // Проверяем в Firebase
+    const purchaseCheck = await checkPurchaseInFirebase(nickname);
+    
+    if (!purchaseCheck.hasPurchase) {
+      console.log(`❌ Review rejected: No purchase found for ${nickname}`);
+      return res.status(403).json({ 
+        error: "You have not made a purchase or your payment is still processing",
+        details: purchaseCheck.details
+      });
+    }
+
+    // Сохраняем отзыв
+    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+    reviews.push({ 
+      nickname, 
+      review, 
+      date: new Date().toISOString(),
+      verified: true // Помечаем как проверенный отзыв
+    });
+    fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
+
+    console.log(`✅ Review submitted successfully by: ${nickname}`);
+    res.json({ 
+      success: true, 
+      message: "Review submitted successfully!",
+      verified: true
+    });
+  } catch (error) {
+    console.error('❌ Error in review submission:', error);
+    res.status(500).json({ error: "Server error while processing review" });
   }
 });
 
@@ -873,25 +985,10 @@ ${itemsText}`
   res.json({ success: true });
 });
 
-// --- Отзывы ---
+// --- Получить все отзывы ---
 app.get("/api/reviews", (req, res) => {
   const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
   res.json(reviews);
-});
-
-app.post("/api/reviews", (req, res) => {
-  const { nickname, review } = req.body;
-  if (!nickname || !review) return res.status(400).json({ error: "Fill all fields" });
-
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  const hasPurchase = purchases.some(p => p.nickname === nickname);
-  if (!hasPurchase) return res.status(403).json({ error: "You have not made a purchase" });
-
-  const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-  reviews.push({ nickname, review, date: new Date().toISOString() });
-  fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
-
-  res.json({ success: true });
 });
 
 // --- Старт сервера ---
@@ -900,6 +997,7 @@ app.listen(PORT, () => {
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
+  console.log(`🔧 Check Purchase: GET https://paypal-server-46qg.onrender.com/api/check-purchase/ВАШ_НИКНЕЙМ`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
