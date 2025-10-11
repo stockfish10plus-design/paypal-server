@@ -31,10 +31,14 @@ console.log('==========================');
 
 // --- Middleware для JWT ---
 function authMiddleware(req, res, next) {
+  // Проверяем токен в URL параметрах или заголовках
+  const tokenFromUrl = req.query.token;
   const authHeader = req.headers["authorization"];
-  if (!authHeader) return res.status(401).json({ error: "No token" });
+  
+  const token = tokenFromUrl || (authHeader ? authHeader.split(" ")[1] : null);
+  
+  if (!token) return res.status(401).json({ error: "No token" });
 
-  const token = authHeader.split(" ")[1];
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ error: "Invalid token" });
     req.user = user;
@@ -69,7 +73,7 @@ async function savePaymentToFirebase(paymentData) {
       // Информация о покупателе
       buyer: {
         nickname: paymentData.nickname,
-        email: paymentData.payerEmail
+        email: paymentData.payerEmail || 'unknown@email.com'
       },
       
       // Финансовая информация
@@ -119,6 +123,7 @@ app.get("/", (req, res) => {
     endpoints: {
       test: "/api/test-firebase",
       admin: "/admin/payments (requires login)",
+      publicAdmin: "/admin/public (no login required)",
       webhook: "/webhook",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)"
@@ -133,9 +138,16 @@ app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USER && password === ADMIN_PASS) {
     const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: "2h" });
-    return res.json({ token });
+    return res.json({ 
+      success: true,
+      token: token,
+      message: "Login successful"
+    });
   }
-  res.status(401).json({ error: "Invalid credentials" });
+  res.status(401).json({ 
+    success: false,
+    error: "Invalid credentials" 
+  });
 });
 
 // --- Файлы для заказов/отзывов ---
@@ -287,7 +299,7 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей
+// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей (с авторизацией)
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -326,7 +338,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
     <body>
         <div class="container">
             <div class="header">
-                <h1>💳 Payments Management</h1>
+                <h1>💳 Payments Management (Admin)</h1>
                 <div>Total: ${payments.length} payments</div>
             </div>
             
@@ -389,6 +401,99 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     ` : ''}
                 </tbody>
             </table>
+        </div>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка получения платежей: ' + error.message 
+    });
+  }
+});
+
+// 🔓 ДОБАВЛЕНО: Публичная админка (без авторизации)
+app.get("/admin/public", async (req, res) => {
+  try {
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
+    
+    const payments = [];
+    snapshot.forEach(doc => {
+      payments.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Public Payments</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f2f5; }
+            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; text-align: center; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #0070ba; color: white; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            tr:hover { background-color: #f5f5f5; }
+            .status-delivered { color: #28a745; font-weight: bold; }
+            .status-pending { color: #ffc107; font-weight: bold; }
+            .info-box { background: #e7f3ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; text-align: center; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>💳 Payments Overview (Public)</h1>
+            
+            <div class="info-box">
+                <strong>Total Payments: ${payments.length}</strong> | 
+                <strong>Total Revenue: $${payments.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</strong>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Buyer</th>
+                        <th>Email</th>
+                        <th>Amount</th>
+                        <th>Items Count</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${payments.map(payment => `
+                    <tr>
+                        <td><strong>${payment.buyer.nickname}</strong></td>
+                        <td>${payment.buyer.email}</td>
+                        <td>$${payment.amount.total} ${payment.amount.currency}</td>
+                        <td>${payment.items.length} items</td>
+                        <td>${new Date(payment.timestamps.createdAt).toLocaleString('ru-RU')}</td>
+                        <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}">
+                            ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
+                        </td>
+                    </tr>
+                    `).join('')}
+                    ${payments.length === 0 ? `
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 40px;">
+                            No payments found yet. Payments will appear here after successful transactions.
+                        </td>
+                    </tr>
+                    ` : ''}
+                </tbody>
+            </table>
+            
+            <div style="margin-top: 20px; text-align: center; color: #666; font-size: 14px;">
+                Last updated: ${new Date().toLocaleString('ru-RU')}
+            </div>
         </div>
     </body>
     </html>
@@ -511,6 +616,7 @@ app.listen(PORT, () => {
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
-  console.log(`👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments (requires login)`);
+  console.log(`👑 Admin Panel (Auth): https://paypal-server-46qg.onrender.com/admin/payments`);
+  console.log(`🔓 Public Admin: https://paypal-server-46qg.onrender.com/admin/public`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
 });
