@@ -215,6 +215,108 @@ async function savePaymentToFirebase(paymentData) {
   }
 }
 
+// 🔥 ДОБАВЛЕНО: Функции очистки данных
+app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
+  try {
+    const { type } = req.body; // 'local', 'firebase', 'all'
+    
+    let result = { success: true, messages: [] };
+
+    // Очистка локальных данных
+    if (type === 'local' || type === 'all') {
+      fs.writeFileSync(purchasesFile, "[]", "utf-8");
+      result.messages.push("✅ Local purchases cleared");
+    }
+
+    // Очистка Firebase
+    if (type === 'firebase' || type === 'all') {
+      if (db) {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.get();
+        
+        const deletePromises = [];
+        snapshot.forEach(doc => {
+          deletePromises.push(doc.ref.delete());
+        });
+        
+        await Promise.all(deletePromises);
+        result.messages.push(`✅ Firebase cleared (${deletePromises.length} documents)`);
+      } else {
+        result.messages.push("❌ Firebase not available");
+      }
+    }
+
+    console.log(`🧹 Data cleared: ${type}`);
+    res.json(result);
+    
+  } catch (error) {
+    console.error('❌ Error clearing data:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to clear data: ' + error.message 
+    });
+  }
+});
+
+app.post("/api/clear-reviews", authMiddleware, (req, res) => {
+  try {
+    fs.writeFileSync(reviewsFile, "[]", "utf-8");
+    console.log('🧹 Reviews cleared');
+    res.json({ 
+      success: true, 
+      message: "All reviews cleared successfully" 
+    });
+  } catch (error) {
+    console.error('❌ Error clearing reviews:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to clear reviews: ' + error.message 
+    });
+  }
+});
+
+// 🔥 ДОБАВЛЕНО: Получить статистику данных
+app.get("/api/stats", authMiddleware, async (req, res) => {
+  try {
+    const stats = {
+      localPurchases: 0,
+      firebasePurchases: 0,
+      reviews: 0
+    };
+
+    // Локальные покупки
+    try {
+      const localData = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+      stats.localPurchases = localData.length;
+    } catch (e) {
+      stats.localPurchases = 0;
+    }
+
+    // Firebase покупки
+    if (db) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.get();
+        stats.firebasePurchases = snapshot.size;
+      } catch (e) {
+        stats.firebasePurchases = 0;
+      }
+    }
+
+    // Отзывы
+    try {
+      const reviewsData = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+      stats.reviews = reviewsData.length;
+    } catch (e) {
+      stats.reviews = 0;
+    }
+
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 🔥 ДОБАВЛЕНО: Корневой маршрут
 app.get("/", (req, res) => {
   res.json({
@@ -549,7 +651,7 @@ app.post("/api/reviews", (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей
+// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей с функциями очистки
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -630,6 +732,23 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 font-size: 12px;
                 margin-left: 10px;
             }
+            .danger-zone { 
+                margin-top: 30px; 
+                padding: 20px; 
+                background: #f8d7da; 
+                border: 1px solid #f5c6cb; 
+                border-radius: 8px; 
+            }
+            .danger-zone h3 { color: #721c24; margin-top: 0; }
+            .clear-btn { 
+                padding: 8px 15px; 
+                border: none; 
+                border-radius: 5px; 
+                cursor: pointer; 
+                font-weight: bold;
+                transition: all 0.2s;
+            }
+            .clear-btn:hover { transform: scale(1.05); }
         </style>
     </head>
     <body>
@@ -730,6 +849,29 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     ` : ''}
                 </tbody>
             </table>
+
+            <!-- 🔥 ДОБАВЛЕНО: Зона опасности с функциями очистки -->
+            <div class="danger-zone">
+                <h3>⚠️ Danger Zone</h3>
+                
+                <div class="stats" style="margin-bottom: 15px;">
+                    <div class="stat-card" style="background: #fff3cd;">
+                        <h4>📊 Data Statistics</h4>
+                        <p>Local: <span id="local-count">0</span> | Firebase: <span id="firebase-count">0</span> | Reviews: <span id="reviews-count">0</span></p>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="clear-btn" onclick="clearData('local')" style="background: #ffc107; color: #000;">🗑️ Clear Local</button>
+                    <button class="clear-btn" onclick="clearData('firebase')" style="background: #fd7e14; color: #000;">🔥 Clear Firebase</button>
+                    <button class="clear-btn" onclick="clearData('all')" style="background: #dc3545; color: white;">💥 Clear All</button>
+                    <button class="clear-btn" onclick="clearReviews()" style="background: #e83e8c; color: white;">⭐ Clear Reviews</button>
+                </div>
+                
+                <p style="color: #856404; font-size: 12px; margin-top: 10px; margin-bottom: 0;">
+                    ⚠️ This action cannot be undone!
+                </p>
+            </div>
         </div>
 
         <script>
@@ -803,6 +945,87 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     setTimeout(() => notification.remove(), 300);
                 }, 3000);
             }
+
+            // 🔥 ДОБАВЛЕНО: Функции очистки данных
+            async function loadStats() {
+                try {
+                    const response = await fetch('/api/stats', {
+                        headers: { 'Authorization': 'Bearer ' + getTokenFromUrl() }
+                    });
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        document.getElementById('local-count').textContent = result.stats.localPurchases;
+                        document.getElementById('firebase-count').textContent = result.stats.firebasePurchases;
+                        document.getElementById('reviews-count').textContent = result.stats.reviews;
+                    }
+                } catch (error) {
+                    console.error('Error loading stats:', error);
+                }
+            }
+
+            async function clearData(type) {
+                const typeNames = {
+                    'local': 'local purchases',
+                    'firebase': 'Firebase data', 
+                    'all': 'ALL data'
+                };
+                
+                if (!confirm(\`ARE YOU SURE? This will delete \${typeNames[type]}. This action cannot be undone!\`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/clear-purchases', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        },
+                        body: JSON.stringify({ type })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification('✅ ' + result.messages.join(', '), 'success');
+                        setTimeout(() => window.location.reload(), 2000);
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    showNotification('❌ Error: ' + error.message, 'error');
+                }
+            }
+
+            async function clearReviews() {
+                if (!confirm('ARE YOU SURE? This will delete ALL reviews. This action cannot be undone!')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/clear-reviews', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification('✅ ' + result.message, 'success');
+                        setTimeout(() => window.location.reload(), 2000);
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    showNotification('❌ Error: ' + error.message, 'error');
+                }
+            }
+
+            // Загружаем статистику при старте
+            loadStats();
         </script>
     </body>
     </html>
