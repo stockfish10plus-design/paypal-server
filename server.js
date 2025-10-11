@@ -387,7 +387,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
         <title>Payments Admin</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
             table { width: 100%; border-collapse: collapse; margin-top: 20px; }
             th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
             th { background-color: #4CAF50; color: white; }
@@ -401,6 +401,20 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
             .logout { background: #dc3545; color: white; padding: 8px 15px; border: none; border-radius: 5px; cursor: pointer; }
             .logout:hover { background: #c82333; }
+            .deliver-btn { 
+                background: #28a745; 
+                color: white; 
+                padding: 6px 12px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+                font-size: 12px;
+            }
+            .deliver-btn:hover { background: #218838; }
+            .deliver-btn:disabled { 
+                background: #6c757d; 
+                cursor: not-allowed; 
+            }
         </style>
     </head>
     <body>
@@ -437,11 +451,25 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${payments.map(payment => `
-                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
+                    ${payments.map(payment => {
+                      // Форматируем дату правильно
+                      const createdAt = payment.timestamps.createdAt;
+                      let formattedDate = 'Invalid Date';
+                      
+                      if (createdAt && createdAt.toDate) {
+                        // Если это Firebase Timestamp
+                        formattedDate = createdAt.toDate().toLocaleString('ru-RU');
+                      } else if (createdAt) {
+                        // Если это обычная дата
+                        formattedDate = new Date(createdAt).toLocaleString('ru-RU');
+                      }
+                      
+                      return `
+                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -457,15 +485,23 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             `).join('')}
                             <small>Total items: ${payment.items.length}</small>
                         </td>
-                        <td>${new Date(payment.timestamps.createdAt).toLocaleString('ru-RU')}</td>
-                        <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}">
+                        <td>${formattedDate}</td>
+                        <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}" id="status-${payment.id}">
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
                         </td>
+                        <td>
+                            ${!payment.delivery.delivered ? 
+                              `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
+                                Mark Delivered
+                              </button>` : 
+                              '<span style="color: #28a745;">✅ Done</span>'
+                            }
+                        </td>
                     </tr>
-                    `).join('')}
+                    `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 40px;">
+                        <td colspan="7" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -473,6 +509,87 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 </tbody>
             </table>
         </div>
+
+        <script>
+            async function markAsDelivered(paymentId, transactionId) {
+                const btn = document.getElementById('btn-' + paymentId);
+                const statusCell = document.getElementById('status-' + paymentId);
+                const row = document.getElementById('row-' + paymentId);
+                
+                // Блокируем кнопку
+                btn.disabled = true;
+                btn.textContent = 'Updating...';
+                
+                try {
+                    const response = await fetch('/api/mark-delivered', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        },
+                        body: JSON.stringify({
+                            transactionId: transactionId,
+                            paymentId: paymentId
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Обновляем UI
+                        statusCell.innerHTML = '✅ Delivered';
+                        statusCell.className = 'status-delivered';
+                        row.className = 'delivered';
+                        btn.outerHTML = '<span style="color: #28a745;">✅ Done</span>';
+                        
+                        // Показываем уведомление
+                        showNotification('Order marked as delivered!', 'success');
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    // Восстанавливаем кнопку при ошибке
+                    btn.disabled = false;
+                    btn.textContent = 'Mark Delivered';
+                    showNotification('Error: ' + error.message, 'error');
+                }
+            }
+            
+            function getTokenFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('token');
+            }
+            
+            function showNotification(message, type) {
+                // Создаем уведомление
+                const notification = document.createElement('div');
+                notification.style.cssText = \`
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    padding: 15px 20px;
+                    border-radius: 5px;
+                    color: white;
+                    font-weight: bold;
+                    z-index: 1000;
+                    opacity: 0;
+                    transition: opacity 0.3s;
+                    background-color: \${type === 'success' ? '#28a745' : '#dc3545'};
+                \`;
+                notification.textContent = message;
+                
+                document.body.appendChild(notification);
+                
+                // Показываем
+                setTimeout(() => notification.style.opacity = '1', 100);
+                
+                // Скрываем через 3 секунды
+                setTimeout(() => {
+                    notification.style.opacity = '0';
+                    setTimeout(() => notification.remove(), 300);
+                }, 3000);
+            }
+        </script>
     </body>
     </html>
     `;
@@ -482,6 +599,41 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Ошибка получения платежей: ' + error.message 
+    });
+  }
+});
+
+// --- Пометить заказ как выданный (обновленная версия) ---
+app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
+  const { transactionId, paymentId } = req.body;
+  
+  try {
+    // Обновляем в Firebase
+    const paymentRef = db.collection('payments').doc(paymentId);
+    await paymentRef.update({
+      'delivery.delivered': true,
+      'delivery.deliveredAt': new Date(),
+      'timestamps.updatedAt': new Date()
+    });
+    
+    // Также обновляем в локальном файле (для совместимости)
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    const order = purchases.find(p => p.transactionId === transactionId);
+    if (order) {
+      order.delivered = true;
+      fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+    }
+    
+    console.log(`✅ Order ${transactionId} marked as delivered`);
+    res.json({ 
+      success: true, 
+      message: 'Order marked as delivered successfully' 
+    });
+  } catch (error) {
+    console.error('❌ Error marking order as delivered:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to mark order as delivered: ' + error.message 
     });
   }
 });
@@ -524,18 +676,6 @@ app.get("/api/firebase-payments", authMiddleware, async (req, res) => {
 app.get("/api/purchases", authMiddleware, (req, res) => {
   const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
   res.json(purchases);
-});
-
-// --- Пометить заказ как выданный ---
-app.post("/api/mark-delivered", authMiddleware, (req, res) => {
-  const { transactionId } = req.body;
-  const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-  const order = purchases.find(p => p.transactionId === transactionId);
-  if (!order) return res.status(404).json({ error: "Order not found" });
-
-  order.delivered = true;
-  fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
-  res.json({ success: true });
 });
 
 // --- Повторная отправка уведомления в Telegram ---
