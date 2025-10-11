@@ -42,11 +42,10 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// 🔥 ДОБАВЛЕНО: Функция сохранения платежа в Firebase с диагностикой
+// 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
   console.log('🔄 Attempting to save to Firebase...');
   
-  // 🔧 ДОБАВЛЕНО: Проверка переменных
   if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY) {
     console.error('❌ Firebase environment variables are missing!');
     return { success: false, error: 'Firebase config missing' };
@@ -59,19 +58,50 @@ async function savePaymentToFirebase(paymentData) {
   
   try {
     const paymentRef = db.collection('payments').doc();
-    console.log('📝 Creating document with ID:', paymentRef.id);
     
-    await paymentRef.set({
-      amount: paymentData.amount,
-      currency: paymentData.currency || 'USD',
-      payerEmail: paymentData.payerEmail,
+    // 🔥 УЛУЧШЕННАЯ СТРУКТУРА ДАННЫХ
+    const firebaseData = {
+      // Основная информация
+      transactionId: paymentData.transactionId,
       paymentId: paymentData.paymentId,
       status: paymentData.status || 'completed',
-      nickname: paymentData.nickname,
-      items: paymentData.items || [],
-      transactionId: paymentData.transactionId,
-      createdAt: new Date()
-    });
+      
+      // Информация о покупателе
+      buyer: {
+        nickname: paymentData.nickname,
+        email: paymentData.payerEmail
+      },
+      
+      // Финансовая информация
+      amount: {
+        total: paymentData.amount,
+        currency: paymentData.currency || 'USD',
+        items: paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0)
+      },
+      
+      // Товары в структурированном виде
+      items: paymentData.items.map((item, index) => ({
+        id: index + 1,
+        name: item.name,
+        quantity: item.qty,
+        price: item.price,
+        subtotal: (item.price * item.qty).toFixed(2)
+      })),
+      
+      // Мета-данные
+      timestamps: {
+        createdAt: new Date(),
+        updatedAt: new Date()
+      },
+      
+      // Статус доставки
+      delivery: {
+        delivered: false,
+        deliveredAt: null
+      }
+    };
+    
+    await paymentRef.set(firebaseData);
     
     console.log('✅ Successfully saved to Firebase, ID:', paymentRef.id);
     return { success: true, paymentId: paymentRef.id };
@@ -81,6 +111,22 @@ async function savePaymentToFirebase(paymentData) {
     return { success: false, error: error.message };
   }
 }
+
+// 🔥 ДОБАВЛЕНО: Корневой маршрут
+app.get("/", (req, res) => {
+  res.json({
+    message: "PayPal Server is running!",
+    endpoints: {
+      test: "/api/test-firebase",
+      admin: "/admin/payments (requires login)",
+      webhook: "/webhook",
+      login: "/api/login",
+      testPayment: "/api/test-firebase-payment (POST)"
+    },
+    status: "active",
+    timestamp: new Date().toISOString()
+  });
+});
 
 // --- Логин админа ---
 app.post("/api/login", (req, res) => {
@@ -115,7 +161,7 @@ app.post("/webhook", async (req, res) => {
   });
   fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
 
-  // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase
+  // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase с улучшенной структурой
   try {
     const paymentData = {
       amount: details.amount,
@@ -241,6 +287,122 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
+// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей
+app.get("/admin/payments", authMiddleware, async (req, res) => {
+  try {
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
+    
+    const payments = [];
+    snapshot.forEach(doc => {
+      payments.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    // 🔥 Генерируем HTML таблицу
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payments Admin</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #4CAF50; color: white; }
+            tr:hover { background-color: #f5f5f5; }
+            .delivered { background-color: #d4edda; }
+            .pending { background-color: #fff3cd; }
+            .status-delivered { color: #155724; font-weight: bold; }
+            .status-pending { color: #856404; font-weight: bold; }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+            .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>💳 Payments Management</h1>
+                <div>Total: ${payments.length} payments</div>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>💰 Total Revenue</h3>
+                    <p>$${payments.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>✅ Delivered</h3>
+                    <p>${payments.filter(p => p.delivery.delivered).length}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>🕐 Pending</h3>
+                    <p>${payments.filter(p => !p.delivery.delivered).length}</p>
+                </div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th>Buyer</th>
+                        <th>Amount</th>
+                        <th>Items</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${payments.map(payment => `
+                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
+                        <td><strong>${payment.transactionId}</strong></td>
+                        <td>
+                            <div><strong>${payment.buyer.nickname}</strong></div>
+                            <small>${payment.buyer.email}</small>
+                        </td>
+                        <td>
+                            <strong>$${payment.amount.total}</strong>
+                            <div><small>${payment.amount.currency}</small></div>
+                        </td>
+                        <td>
+                            ${payment.items.map(item => `
+                            <div>${item.name} x${item.quantity} ($${item.subtotal})</div>
+                            `).join('')}
+                            <small>Total items: ${payment.items.length}</small>
+                        </td>
+                        <td>${new Date(payment.timestamps.createdAt).toLocaleString('ru-RU')}</td>
+                        <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}">
+                            ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
+                        </td>
+                    </tr>
+                    `).join('')}
+                    ${payments.length === 0 ? `
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 40px;">
+                            No payments found. Payments will appear here after successful transactions.
+                        </td>
+                    </tr>
+                    ` : ''}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка получения платежей: ' + error.message 
+    });
+  }
+});
+
 // 🔥 ДОБАВЛЕНО: Получить все платежи из Firebase
 app.get("/api/firebase-payments", authMiddleware, async (req, res) => {
   try {
@@ -254,7 +416,7 @@ app.get("/api/firebase-payments", authMiddleware, async (req, res) => {
     }
     
     const paymentsRef = db.collection('payments');
-    const snapshot = await paymentsRef.orderBy('createdAt', 'desc').get();
+    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
     
     const payments = [];
     snapshot.forEach(doc => {
@@ -347,6 +509,8 @@ app.post("/api/reviews", (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
-  console.log(`🔧 Test Firebase: https://your-server.onrender.com/api/test-firebase`);
-  console.log(`🔧 Test Payment: POST https://your-server.onrender.com/api/test-firebase-payment`);
+  console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
+  console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
+  console.log(`👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments (requires login)`);
+  console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
 });
