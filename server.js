@@ -29,18 +29,85 @@ console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' 
 console.log('db object:', db ? 'EXISTS' : 'NULL');
 console.log('==========================');
 
-// --- Middleware для JWT ---
+// --- УЛУЧШЕННЫЙ Middleware для JWT ---
 function authMiddleware(req, res, next) {
-  // Проверяем токен в URL параметрах или заголовках
+  // Проверяем токен в разных местах
   const tokenFromUrl = req.query.token;
   const authHeader = req.headers["authorization"];
+  const tokenFromBody = req.body.token;
   
-  const token = tokenFromUrl || (authHeader ? authHeader.split(" ")[1] : null);
+  const token = tokenFromUrl || (authHeader ? authHeader.split(" ")[1] : null) || tokenFromBody;
   
-  if (!token) return res.status(401).json({ error: "No token" });
+  if (!token) {
+    // Если токена нет, показываем страницу логина
+    const loginHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Admin Login</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+            .login-container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            input, button { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 5px; }
+            button { background: #0070ba; color: white; border: none; cursor: pointer; }
+            button:hover { background: #005c99; }
+            .error { color: red; margin-top: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <h2>🔐 Admin Login</h2>
+            <form id="loginForm">
+                <input type="text" name="username" placeholder="Username" value="admin" required>
+                <input type="password" name="password" placeholder="Password" required>
+                <button type="submit">Login</button>
+            </form>
+            <div id="error" class="error"></div>
+        </div>
+        <script>
+            document.getElementById('loginForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const data = {
+                    username: formData.get('username'),
+                    password: formData.get('password')
+                };
+                
+                try {
+                    const response = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Перенаправляем с токеном в URL
+                        window.location.href = '/admin/payments?token=' + result.token;
+                    } else {
+                        document.getElementById('error').textContent = result.error || 'Login failed';
+                    }
+                } catch (error) {
+                    document.getElementById('error').textContent = 'Network error: ' + error.message;
+                }
+            });
+        </script>
+    </body>
+    </html>
+    `;
+    return res.send(loginHtml);
+  }
 
+  // Проверяем токен
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: "Invalid token" });
+    if (err) {
+      return res.status(403).json({ 
+        success: false, 
+        error: "Invalid or expired token",
+        message: "Please login again at /admin/payments" 
+      });
+    }
     req.user = user;
     next();
   });
@@ -333,13 +400,18 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
             .stats { display: flex; gap: 20px; margin-bottom: 20px; }
             .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
+            .logout { background: #dc3545; color: white; padding: 8px 15px; border: none; border-radius: 5px; cursor: pointer; }
+            .logout:hover { background: #c82333; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>💳 Payments Management (Admin)</h1>
-                <div>Total: ${payments.length} payments</div>
+                <div>
+                    <span style="margin-right: 15px;">Total: ${payments.length} payments</span>
+                    <button class="logout" onclick="window.location.href='/admin/payments'">Logout</button>
+                </div>
             </div>
             
             <div class="stats">
