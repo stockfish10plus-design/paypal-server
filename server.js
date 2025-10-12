@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 10000;
 
 // --- Админские креды и JWT ---
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
-const ADMIN_PASS = process.env.ADMIN_PASS || "1234";
+const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
 app.use(bodyParser.json());
@@ -28,6 +28,43 @@ console.log('FIREBASE_CLIENT_EMAIL:', process.env.FIREBASE_CLIENT_EMAIL ? 'SET' 
 console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' + process.env.FIREBASE_PRIVATE_KEY.length + ' chars)' : 'NOT SET');
 console.log('db object:', db ? 'EXISTS' : 'NULL');
 console.log('==========================');
+
+// 🔥 ДОБАВЛЕНО: Функция для бэкапа в Google Sheets
+async function backupToGoogleSheets(paymentData) {
+  try {
+    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbwIVBvBr6FSAf96QHupEGb_9YMQvKIKuFIYixTbG1Zf0R3zdmLanM9na-gZY46csc6P/exec';
+    
+    console.log('📤 Sending to Google Sheets...', paymentData.transactionId);
+    
+    const response = await fetch(googleWebhookURL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        transactionId: paymentData.transactionId,
+        nickname: paymentData.nickname,
+        payerEmail: paymentData.payerEmail,
+        amount: paymentData.amount,
+        items: paymentData.items
+      })
+    });
+    
+    const result = await response.json();
+    console.log('✅ Google Sheets backup:', result.success ? 'SUCCESS' : 'FAILED');
+    
+    if (!result.success) {
+      console.error('Google Sheets error:', result.error);
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.error('❌ Google Sheets backup failed:', error.message);
+    // Не прерываем выполнение если бэкап не удался
+    return { success: false, error: error.message };
+  }
+}
 
 // --- УЛУЧШЕННЫЙ Middleware для JWT ---
 function authMiddleware(req, res, next) {
@@ -380,6 +417,26 @@ app.post("/webhook", async (req, res) => {
     }
   } catch (firebaseError) {
     console.error('❌ Ошибка при работе с Firebase:', firebaseError);
+  }
+
+  // 🔥 ДОБАВЛЕНО: Отправляем в Google Sheets
+  try {
+    console.log('📤 Sending to Google Sheets...');
+    const googleSheetsResult = await backupToGoogleSheets({
+      transactionId: details.transactionId,
+      nickname: nickname,
+      payerEmail: details.payerEmail || 'unknown@email.com',
+      amount: details.amount,
+      items: details.items
+    });
+    
+    if (!googleSheetsResult.success) {
+      console.error('❌ Ошибка сохранения в Google Sheets:', googleSheetsResult.error);
+    } else {
+      console.log('✅ Payment saved to Google Sheets successfully');
+    }
+  } catch (googleSheetsError) {
+    console.error('❌ Ошибка при работе с Google Sheets:', googleSheetsError);
   }
 
   // Форматируем товары красиво
