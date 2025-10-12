@@ -32,7 +32,7 @@ console.log('==========================');
 // 🔥 ДОБАВЛЕНО: Функция для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
-    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbxhYagfBjtQG81iwWDewT4Q4rQ1JDBnMHCRrvyyisKZ2wGe6yYEa-6YATXloLNyf96a/exec';
+    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbwIVBvBr6FSAf96QHupEGb_9YMQvKIKuFIYixTbG1Zf0R3zdmLanM9na-gZY46csc6P/exec';
     
     console.log('📤 Sending to Google Sheets...', paymentData.transactionId);
     
@@ -61,7 +61,6 @@ async function backupToGoogleSheets(paymentData) {
     
   } catch (error) {
     console.error('❌ Google Sheets backup failed:', error.message);
-    // Не прерываем выполнение если бэкап не удался
     return { success: false, error: error.message };
   }
 }
@@ -677,30 +676,70 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 УПРОЩЕННЫЙ КОД ДЛЯ ОТЗЫВОВ: ЛЮБОЙ может оставить отзыв с ЛЮБЫМ именем
-app.post("/api/reviews", (req, res) => {
-  const { name, review } = req.body; // 🔥 Используем name вместо nickname
+// 🔥 СИСТЕМА ОГРАНИЧЕНИЯ ОТЗЫВОВ: 1 отзыв = 1 покупка
+app.post("/api/reviews", async (req, res) => {
+  const { name, review, transactionId } = req.body;
   
   if (!name || !review) {
-    return res.status(400).json({ error: "Please fill in your name and review" });
+    return res.status(400).json({ error: "Please fill in name and review" });
   }
 
   try {
-    console.log(`📝 New review from: ${name}`);
+    console.log(`📝 New review attempt from: ${name}`);
     
-    // 🔥 ПРОСТО СОХРАНЯЕМ ОТЗЫВ БЕЗ ПРОВЕРОК
+    // 🔥 ПРОВЕРЯЕМ ЕСТЬ ЛИ ПОКУПКИ У ЭТОГО ПОЛЬЗОВАТЕЛЯ
+    let hasPurchase = false;
+    let alreadyReviewed = false;
+
+    // Проверяем в Firebase
+    if (db) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.where('buyer.nickname', '==', name).get();
+        
+        if (!snapshot.empty) {
+          hasPurchase = true;
+          console.log(`✅ User ${name} has ${snapshot.size} purchases`);
+          
+          // Проверяем не оставлял ли уже отзыв
+          const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+          alreadyReviewed = reviews.some(r => r.name === name);
+        }
+      } catch (firebaseError) {
+        console.error('Firebase check error:', firebaseError);
+      }
+    }
+
+    // 🔥 ЕСЛИ НЕТ ПОКУПОК - ОТКАЗЫВАЕМ
+    if (!hasPurchase) {
+      console.log(`❌ User ${name} has no purchases - review rejected`);
+      return res.status(403).json({ 
+        error: "You can only leave a review after making a purchase" 
+      });
+    }
+
+    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ - ОТКАЗЫВАЕМ
+    if (alreadyReviewed) {
+      console.log(`❌ User ${name} already left a review - rejected`);
+      return res.status(403).json({ 
+        error: "You have already left a review. Thank you!" 
+      });
+    }
+
+    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ
     const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
     reviews.push({ 
-      name, // 🔥 Сохраняем имя которое человек ввел в отзыве
+      name,
       review, 
-      date: new Date().toISOString()
+      date: new Date().toISOString(),
+      transactionId: transactionId || 'unknown'
     });
     fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
 
     console.log(`✅ Review submitted successfully by: ${name}`);
     res.json({ 
       success: true, 
-      message: "Review submitted successfully!"
+      message: "Thank you for your review!" 
     });
   } catch (error) {
     console.error('❌ Error in review submission:', error);
@@ -1168,7 +1207,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                       return `
                     <tr id="review-${review.id}">
                         <td>${review.id}</td>
-                        <td><strong>${review.name}</strong></td> <!-- 🔥 Используем name вместо nickname -->
+                        <td><strong>${review.name}</strong></td>
                         <td>${review.review}</td>
                         <td>${formattedDate}</td>
                         <td>
