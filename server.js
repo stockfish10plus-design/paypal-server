@@ -32,7 +32,7 @@ console.log('==========================');
 // 🔥 ДОБАВЛЕНО: Функция для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
-    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbwIVBvBr6FSAf96QHupEGb_9YMQvKIKuFIYixTbG1Zf0R3zdmLanM9na-gZY46csc6P/exec';
+    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbxhYagfBjtQG81iwWDewT4Q4rQ1JDBnMHCRrvyyisKZ2wGe6yYEa-6YATXloLNyf96a/exec';
     
     console.log('📤 Sending to Google Sheets...', paymentData.transactionId);
     
