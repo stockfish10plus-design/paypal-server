@@ -21,6 +21,69 @@ const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 app.use(bodyParser.json());
 app.use(cors());
 
+// 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
+async function saveReviewToFirestore(reviewData) {
+  try {
+    console.log('💾 Saving review to Firestore...');
+    
+    const reviewRef = db.collection('reviews').doc();
+    
+    const firestoreReview = {
+      name: reviewData.name,
+      review: reviewData.review,
+      transactionId: reviewData.transactionId,
+      createdAt: new Date(),
+      visible: true
+    };
+    
+    await reviewRef.set(firestoreReview);
+    console.log('✅ Review saved to Firestore with ID:', reviewRef.id);
+    
+    return { success: true, reviewId: reviewRef.id };
+  } catch (error) {
+    console.error('❌ Error saving review to Firestore:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function getReviewsFromFirestore() {
+  try {
+    console.log('📖 Getting reviews from Firestore...');
+    
+    const reviewsRef = db.collection('reviews');
+    const snapshot = await reviewsRef.where('visible', '==', true).orderBy('createdAt', 'desc').get();
+    
+    const reviews = [];
+    snapshot.forEach(doc => {
+      reviews.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    console.log(`✅ Found ${reviews.length} reviews in Firestore`);
+    return { success: true, reviews };
+  } catch (error) {
+    console.error('❌ Error getting reviews from Firestore:', error);
+    return { success: false, error: error.message, reviews: [] };
+  }
+}
+
+async function deleteReviewFromFirestore(reviewId) {
+  try {
+    console.log('🗑️ Deleting review from Firestore:', reviewId);
+    
+    const reviewRef = db.collection('reviews').doc(reviewId);
+    await reviewRef.update({ visible: false });
+    
+    console.log('✅ Review marked as hidden in Firestore');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error deleting review from Firestore:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // 🔧 ДОБАВЛЕНО: Диагностика Firebase при старте
 console.log('=== FIREBASE DEBUG INFO ===');
 console.log('FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? 'SET' : 'NOT SET');
@@ -149,8 +212,9 @@ function authMiddleware(req, res, next) {
 const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
+// 🔥 ИЗМЕНЕНО: Убираем локальный файл для отзывов, так как теперь используем Firestore
 const reviewsFile = path.join(__dirname, "reviews.json");
-if (!fs.existsSync(reviewsFile)) fs.writeFileSync(reviewsFile, "[]", "utf-8");
+// Файл оставляем для обратной совместимости, но основной источник - Firestore
 
 // 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
@@ -300,8 +364,19 @@ app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
 
 app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
   try {
-    // Очищаем локальные отзывы
-    fs.writeFileSync(reviewsFile, "[]", "utf-8");
+    // 🔥 ИЗМЕНЕНО: Очищаем отзывы из Firestore вместо локального файла
+    if (db) {
+      const reviewsRef = db.collection('reviews');
+      const snapshot = await reviewsRef.get();
+      
+      const deletePromises = [];
+      snapshot.forEach(doc => {
+        deletePromises.push(doc.ref.delete());
+      });
+      
+      await Promise.all(deletePromises);
+      console.log(`✅ Firestore reviews cleared (${deletePromises.length} documents)`);
+    }
     
     // 🔥 ДОБАВЛЕНО: Также сбрасываем флаги отзывов в Firebase
     if (db) {
@@ -322,10 +397,10 @@ app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
       console.log(`✅ Reset review flags for ${updatePromises.length} payments`);
     }
     
-    console.log('🧹 Reviews cleared');
+    console.log('🧹 Reviews cleared from Firestore');
     res.json({ 
       success: true, 
-      message: "All reviews cleared successfully" 
+      message: "All reviews cleared successfully from Firestore" 
     });
   } catch (error) {
     console.error('❌ Error clearing reviews:', error);
@@ -364,12 +439,15 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       }
     }
 
-    // Отзывы
-    try {
-      const reviewsData = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-      stats.reviews = reviewsData.length;
-    } catch (e) {
-      stats.reviews = 0;
+    // 🔥 ИЗМЕНЕНО: Отзывы из Firestore
+    if (db) {
+      try {
+        const reviewsRef = db.collection('reviews');
+        const snapshot = await reviewsRef.where('visible', '==', true).get();
+        stats.reviews = snapshot.size;
+      } catch (e) {
+        stats.reviews = 0;
+      }
     }
 
     res.json({ success: true, stats });
@@ -564,6 +642,330 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
+// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId + сохранение в Firestore
+app.post("/api/reviews", async (req, res) => {
+  const { name, review, transactionId } = req.body;
+  
+  if (!name || !review) {
+    return res.status(400).json({ error: "Please fill in name and review" });
+  }
+
+  try {
+    console.log(`📝 New review attempt from: ${name}`);
+    
+    let hasValidPurchase = false;
+    let alreadyReviewed = false;
+    let foundTransactionId = null;
+
+    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
+    if (db && transactionId) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
+        
+        if (!snapshot.empty) {
+          hasValidPurchase = true;
+          const paymentData = snapshot.docs[0].data();
+          foundTransactionId = paymentData.transactionId;
+          
+          // Проверяем, не оставлен ли уже отзыв для этой транзакции
+          if (paymentData.reviewLeft) {
+            alreadyReviewed = true;
+            console.log(`❌ Transaction ${transactionId} already has a review`);
+          }
+        } else {
+          console.log(`❌ No purchase found for transaction: ${transactionId}`);
+        }
+      } catch (firebaseError) {
+        console.error('Firebase check error:', firebaseError);
+      }
+    }
+
+    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
+    if (!hasValidPurchase) {
+      console.log(`❌ No valid purchase found for review - rejected`);
+      return res.status(403).json({ 
+        error: "You can only leave a review after making a purchase" 
+      });
+    }
+
+    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
+    if (alreadyReviewed) {
+      console.log(`❌ Review already exists for this purchase - rejected`);
+      return res.status(403).json({ 
+        error: "You have already left a review for this purchase. Thank you!" 
+      });
+    }
+
+    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ В FIRESTORE
+    const reviewData = { 
+      name,
+      review, 
+      transactionId: foundTransactionId || transactionId
+    };
+    
+    const firestoreResult = await saveReviewToFirestore(reviewData);
+    
+    if (!firestoreResult.success) {
+      throw new Error('Failed to save review to database');
+    }
+
+    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
+    if (db && foundTransactionId) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.where('transactionId', '==', foundTransactionId).get();
+        
+        if (!snapshot.empty) {
+          const paymentDoc = snapshot.docs[0];
+          await paymentDoc.ref.update({
+            reviewLeft: true,
+            reviewName: name,
+            'timestamps.updatedAt': new Date()
+          });
+          console.log(`✅ Review flag updated in Firebase for transaction: ${foundTransactionId}`);
+        }
+      } catch (firebaseError) {
+        console.error('Error updating review flag in Firebase:', firebaseError);
+      }
+    }
+
+    console.log(`✅ Review submitted successfully by: ${name} for transaction: ${foundTransactionId}`);
+    res.json({ 
+      success: true, 
+      message: "Thank you for your review!" 
+    });
+  } catch (error) {
+    console.error('❌ Error in review submission:', error);
+    res.status(500).json({ error: "Server error while processing review" });
+  }
+});
+
+// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore
+app.get("/api/reviews", async (req, res) => {
+  try {
+    const result = await getReviewsFromFirestore();
+    
+    if (result.success) {
+      // 🔥 Форматируем отзывы для фронтенда
+      const formattedReviews = result.reviews.map(review => ({
+        name: review.name,
+        review: review.review,
+        date: review.createdAt
+      }));
+      
+      res.json(formattedReviews);
+    } else {
+      throw new Error(result.error);
+    }
+  } catch (error) {
+    console.error('❌ Error reading reviews from Firestore:', error);
+    res.status(500).json({ error: 'Failed to read reviews' });
+  }
+});
+
+// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Удалить отзыв из Firestore
+app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
+  const reviewId = req.params.id;
+  
+  try {
+    // 🔥 Удаляем отзыв из Firestore
+    const deleteResult = await deleteReviewFromFirestore(reviewId);
+    
+    if (!deleteResult.success) {
+      throw new Error(deleteResult.error);
+    }
+    
+    // 🔥 Сбрасываем флаг отзыва в Firebase для соответствующей покупки
+    if (db) {
+      try {
+        // Получаем информацию об отзыве чтобы найти transactionId
+        const reviewRef = db.collection('reviews').doc(reviewId);
+        const reviewDoc = await reviewRef.get();
+        
+        if (reviewDoc.exists) {
+          const reviewData = reviewDoc.data();
+          const transactionId = reviewData.transactionId;
+          
+          if (transactionId) {
+            const paymentsRef = db.collection('payments');
+            const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
+            
+            if (!snapshot.empty) {
+              const paymentDoc = snapshot.docs[0];
+              await paymentDoc.ref.update({
+                reviewLeft: false,
+                reviewName: null,
+                'timestamps.updatedAt': new Date()
+              });
+              console.log(`✅ Review flag reset in Firebase for transaction: ${transactionId}`);
+            }
+          }
+        }
+      } catch (firebaseError) {
+        console.error('Error resetting review flag in Firebase:', firebaseError);
+      }
+    }
+    
+    res.json({ success: true, message: "Review deleted successfully" });
+  } catch (error) {
+    console.error('❌ Error deleting review from Firestore:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete review: ' + error.message 
+    });
+  }
+});
+
+// 🔥 ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ОТЗЫВОВ: получает данные из Firestore
+app.get("/admin/reviews", authMiddleware, async (req, res) => {
+  try {
+    const result = await getReviewsFromFirestore();
+    
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+    
+    const reviewsWithId = result.reviews.map(review => ({
+      id: review.id,
+      name: review.name,
+      review: review.review,
+      date: review.createdAt,
+      transactionId: review.transactionId
+    }));
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reviews Management</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #0070ba; color: white; }
+            .delete-btn { 
+                background: #dc3545; 
+                color: white; 
+                padding: 6px 12px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+            }
+            .delete-btn:hover { background: #c82333; }
+            .nav { margin-bottom: 20px; }
+            .nav a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin-right: 10px;
+            }
+            .nav a:hover { background: #5a6268; }
+            .nav a.active { background: #0070ba; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav">
+                <a href="/admin/payments?token=${req.query.token}">💳 Payments</a>
+                <a href="/admin/reviews?token=${req.query.token}" class="active">⭐ Reviews</a>
+            </div>
+            
+            <h1>⭐ Reviews Management (Firestore)</h1>
+            <p>Total reviews: ${reviewsWithId.length}</p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User</th>
+                        <th>Review</th>
+                        <th>Date</th>
+                        <th>Transaction ID</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reviewsWithId.map(review => {
+                      const reviewDate = review.date && review.date.toDate ? review.date.toDate() : new Date(review.date);
+                      reviewDate.setHours(reviewDate.getHours() + 3);
+                      const formattedDate = reviewDate.toLocaleString('ru-RU');
+                      
+                      return `
+                    <tr id="review-${review.id}">
+                        <td>${review.id}</td>
+                        <td><strong>${review.name}</strong></td>
+                        <td>${review.review}</td>
+                        <td>${formattedDate}</td>
+                        <td><small>${review.transactionId}</small></td>
+                        <td>
+                            <button class="delete-btn" onclick="deleteReview('${review.id}')">
+                                Delete
+                            </button>
+                        </td>
+                    </tr>
+                    `}).join('')}
+                    ${reviewsWithId.length === 0 ? `
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 40px;">
+                            No reviews found in Firestore.
+                        </td>
+                    </tr>
+                    ` : ''}
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            async function deleteReview(reviewId) {
+                if (!confirm('Are you sure you want to delete this review?')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/reviews/' + reviewId, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        document.getElementById('review-' + reviewId).remove();
+                        alert('Review deleted successfully!');
+                        // Перезагружаем страницу чтобы обновить список
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    alert('Error: ' + error.message);
+                }
+            }
+            
+            function getTokenFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('token');
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка получения отзывов из Firestore: ' + error.message 
+    });
+  }
+});
+
 // 🔥 ДОБАВЛЕНО: Красивый локальный просмотр покупок
 app.get("/local/payments", (req, res) => {
   try {
@@ -698,103 +1100,6 @@ app.get("/local/payments", (req, res) => {
       success: false, 
       error: 'Ошибка чтения локальных данных: ' + error.message 
     });
-  }
-});
-
-// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId
-app.post("/api/reviews", async (req, res) => {
-  const { name, review, transactionId } = req.body;
-  
-  if (!name || !review) {
-    return res.status(400).json({ error: "Please fill in name and review" });
-  }
-
-  try {
-    console.log(`📝 New review attempt from: ${name}`);
-    
-    let hasValidPurchase = false;
-    let alreadyReviewed = false;
-    let foundTransactionId = null;
-
-    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
-    if (db && transactionId) {
-      try {
-        const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
-        
-        if (!snapshot.empty) {
-          hasValidPurchase = true;
-          const paymentData = snapshot.docs[0].data();
-          foundTransactionId = paymentData.transactionId;
-          
-          // Проверяем, не оставлен ли уже отзыв для этой транзакции
-          if (paymentData.reviewLeft) {
-            alreadyReviewed = true;
-            console.log(`❌ Transaction ${transactionId} already has a review`);
-          }
-        } else {
-          console.log(`❌ No purchase found for transaction: ${transactionId}`);
-        }
-      } catch (firebaseError) {
-        console.error('Firebase check error:', firebaseError);
-      }
-    }
-
-    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
-    if (!hasValidPurchase) {
-      console.log(`❌ No valid purchase found for review - rejected`);
-      return res.status(403).json({ 
-        error: "You can only leave a review after making a purchase" 
-      });
-    }
-
-    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
-    if (alreadyReviewed) {
-      console.log(`❌ Review already exists for this purchase - rejected`);
-      return res.status(403).json({ 
-        error: "You have already left a review for this purchase. Thank you!" 
-      });
-    }
-
-    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ
-    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-    const newReview = { 
-      name,
-      review, 
-      date: new Date().toISOString(),
-      transactionId: foundTransactionId || transactionId
-    };
-    reviews.push(newReview);
-    fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
-
-    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
-    if (db && foundTransactionId) {
-      try {
-        const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.where('transactionId', '==', foundTransactionId).get();
-        
-        if (!snapshot.empty) {
-          const paymentDoc = snapshot.docs[0];
-          await paymentDoc.ref.update({
-            reviewLeft: true,
-            reviewName: name,
-            'timestamps.updatedAt': new Date()
-          });
-          console.log(`✅ Review flag updated in Firebase for transaction: ${foundTransactionId}`);
-        }
-      } catch (firebaseError) {
-        console.error('Error updating review flag in Firebase:', firebaseError);
-      }
-    }
-
-    console.log(`✅ Review submitted successfully by: ${name} for transaction: ${foundTransactionId}`);
-    res.json({ 
-      success: true, 
-      message: "Thank you for your review!" 
-    });
-  } catch (error) {
-    console.error('❌ Error in review submission:', error);
-    res.status(500).json({ error: "Server error while processing review" });
   }
 });
 
@@ -1203,145 +1508,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Админка для управления отзывами
-app.get("/admin/reviews", authMiddleware, async (req, res) => {
-  try {
-    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-    const reviewsWithId = reviews.map((review, index) => ({
-      id: index,
-      ...review
-    }));
-    
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Reviews Management</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #0070ba; color: white; }
-            .delete-btn { 
-                background: #dc3545; 
-                color: white; 
-                padding: 6px 12px; 
-                border: none; 
-                border-radius: 4px; 
-                cursor: pointer; 
-            }
-            .delete-btn:hover { background: #c82333; }
-            .nav { margin-bottom: 20px; }
-            .nav a { 
-                background: #6c757d; 
-                color: white; 
-                padding: 10px 15px; 
-                text-decoration: none; 
-                border-radius: 5px; 
-                margin-right: 10px;
-            }
-            .nav a:hover { background: #5a6268; }
-            .nav a.active { background: #0070ba; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="nav">
-                <a href="/admin/payments?token=${req.query.token}">💳 Payments</a>
-                <a href="/admin/reviews?token=${req.query.token}" class="active">⭐ Reviews</a>
-            </div>
-            
-            <h1>⭐ Reviews Management</h1>
-            <p>Total reviews: ${reviewsWithId.length}</p>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>User</th>
-                        <th>Review</th>
-                        <th>Date</th>
-                        <th>Transaction ID</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${reviewsWithId.map(review => {
-                      const reviewDate = new Date(review.date);
-                      reviewDate.setHours(reviewDate.getHours() + 3);
-                      const formattedDate = reviewDate.toLocaleString('ru-RU');
-                      
-                      return `
-                    <tr id="review-${review.id}">
-                        <td>${review.id}</td>
-                        <td><strong>${review.name}</strong></td>
-                        <td>${review.review}</td>
-                        <td>${formattedDate}</td>
-                        <td><small>${review.transactionId}</small></td>
-                        <td>
-                            <button class="delete-btn" onclick="deleteReview(${review.id})">
-                                Delete
-                            </button>
-                        </td>
-                    </tr>
-                    `}).join('')}
-                    ${reviewsWithId.length === 0 ? `
-                    <tr>
-                        <td colspan="6" style="text-align: center; padding: 40px;">
-                            No reviews found.
-                        </td>
-                    </tr>
-                    ` : ''}
-                </tbody>
-            </table>
-        </div>
-
-        <script>
-            async function deleteReview(reviewId) {
-                if (!confirm('Are you sure you want to delete this review?')) {
-                    return;
-                }
-                
-                try {
-                    const response = await fetch('/api/reviews/' + reviewId, {
-                        method: 'DELETE',
-                        headers: {
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        document.getElementById('review-' + reviewId).remove();
-                        alert('Review deleted successfully!');
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    alert('Error: ' + error.message);
-                }
-            }
-            
-            function getTokenFromUrl() {
-                const urlParams = new URLSearchParams(window.location.search);
-                return urlParams.get('token');
-            }
-        </script>
-    </body>
-    </html>
-    `;
-    
-    res.send(html);
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка получения отзывов: ' + error.message 
-    });
-  }
-});
-
 // --- Пометить заказ как выданный (обновленная версия) ---
 app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   const { transactionId, paymentId } = req.body;
@@ -1384,74 +1550,11 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   }
 });
 
-// --- Удалить отзыв (админ) ---
-app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
-  const reviewId = parseInt(req.params.id);
-  
-  try {
-    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-    
-    if (reviewId < 0 || reviewId >= reviews.length) {
-      return res.status(404).json({ error: "Review not found" });
-    }
-    
-    const deletedReview = reviews[reviewId];
-    
-    // Удаляем отзыв из локального файла
-    reviews.splice(reviewId, 1);
-    fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
-    
-    // 🔥 ДОБАВЛЕНО: Сбрасываем флаг отзыва в Firebase
-    if (db && deletedReview.transactionId) {
-      try {
-        const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.where('transactionId', '==', deletedReview.transactionId).get();
-        
-        if (!snapshot.empty) {
-          const paymentDoc = snapshot.docs[0];
-          await paymentDoc.ref.update({
-            reviewLeft: false,
-            reviewName: null,
-            'timestamps.updatedAt': new Date()
-          });
-          console.log(`✅ Review flag reset in Firebase for transaction: ${deletedReview.transactionId}`);
-        }
-      } catch (firebaseError) {
-        console.error('Error resetting review flag in Firebase:', firebaseError);
-      }
-    }
-    
-    res.json({ success: true, message: "Review deleted successfully" });
-  } catch (error) {
-    console.error('❌ Error deleting review:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete review: ' + error.message 
-    });
-  }
-});
-
-// --- Получить все отзывы ---
-app.get("/api/reviews", (req, res) => {
-  try {
-    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-    // 🔥 Возвращаем отзывы с полем name вместо nickname
-    const formattedReviews = reviews.map(review => ({
-      name: review.name,
-      review: review.review,
-      date: review.date
-    }));
-    res.json(formattedReviews);
-  } catch (error) {
-    console.error('❌ Error reading reviews:', error);
-    res.status(500).json({ error: 'Failed to read reviews' });
-  }
-});
-
 // --- Старт сервера ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
+  console.log(`📝 Reviews now stored in Firestore collection 'reviews'`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
