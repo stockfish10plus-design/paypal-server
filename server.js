@@ -226,7 +226,11 @@ async function savePaymentToFirebase(paymentData) {
       delivery: {
         delivered: false,
         deliveredAt: null
-      }
+      },
+
+      // 🔥 ДОБАВЛЕНО: Поле для отслеживания оставленных отзывов
+      reviewLeft: false,
+      reviewName: null
     };
     
     await paymentRef.set(firebaseData);
@@ -294,9 +298,30 @@ app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
   }
 });
 
-app.post("/api/clear-reviews", authMiddleware, (req, res) => {
+app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
   try {
+    // Очищаем локальные отзывы
     fs.writeFileSync(reviewsFile, "[]", "utf-8");
+    
+    // 🔥 ДОБАВЛЕНО: Также сбрасываем флаги отзывов в Firebase
+    if (db) {
+      const paymentsRef = db.collection('payments');
+      const snapshot = await paymentsRef.get();
+      
+      const updatePromises = [];
+      snapshot.forEach(doc => {
+        updatePromises.push(
+          doc.ref.update({
+            reviewLeft: false,
+            reviewName: null
+          })
+        );
+      });
+      
+      await Promise.all(updatePromises);
+      console.log(`✅ Reset review flags for ${updatePromises.length} payments`);
+    }
+    
     console.log('🧹 Reviews cleared');
     res.json({ 
       success: true, 
@@ -690,6 +715,7 @@ app.post("/api/reviews", async (req, res) => {
     // 🔥 ПРОВЕРЯЕМ ЕСТЬ ЛИ ПОКУПКИ У ЭТОГО ПОЛЬЗОВАТЕЛЯ
     let hasPurchase = false;
     let alreadyReviewed = false;
+    let availableTransactionId = null;
 
     // Проверяем в Firebase
     if (db) {
@@ -701,9 +727,20 @@ app.post("/api/reviews", async (req, res) => {
           hasPurchase = true;
           console.log(`✅ User ${name} has ${snapshot.size} purchases`);
           
-          // Проверяем не оставлял ли уже отзыв
-          const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-          alreadyReviewed = reviews.some(r => r.name === name);
+          // Ищем первую покупку без отзыва
+          for (const doc of snapshot.docs) {
+            const paymentData = doc.data();
+            if (!paymentData.reviewLeft) {
+              availableTransactionId = paymentData.transactionId;
+              break;
+            }
+          }
+          
+          // Если все покупки уже имеют отзывы
+          if (!availableTransactionId) {
+            alreadyReviewed = true;
+            console.log(`❌ User ${name} already left reviews for all purchases`);
+          }
         }
       } catch (firebaseError) {
         console.error('Firebase check error:', firebaseError);
@@ -718,23 +755,44 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
-    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ - ОТКАЗЫВАЕМ
+    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ВСЕХ ПОКУПОК - ОТКАЗЫВАЕМ
     if (alreadyReviewed) {
-      console.log(`❌ User ${name} already left a review - rejected`);
+      console.log(`❌ User ${name} already left reviews for all purchases - rejected`);
       return res.status(403).json({ 
-        error: "You have already left a review. Thank you!" 
+        error: "You have already left reviews for all your purchases. Thank you!" 
       });
     }
 
     // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ
     const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-    reviews.push({ 
+    const newReview = { 
       name,
       review, 
       date: new Date().toISOString(),
-      transactionId: transactionId || 'unknown'
-    });
+      transactionId: availableTransactionId || transactionId || 'unknown'
+    };
+    reviews.push(newReview);
     fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
+
+    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
+    if (db && availableTransactionId) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.where('transactionId', '==', availableTransactionId).get();
+        
+        if (!snapshot.empty) {
+          const paymentDoc = snapshot.docs[0];
+          await paymentDoc.ref.update({
+            reviewLeft: true,
+            reviewName: name,
+            'timestamps.updatedAt': new Date()
+          });
+          console.log(`✅ Review flag updated in Firebase for transaction: ${availableTransactionId}`);
+        }
+      } catch (firebaseError) {
+        console.error('Error updating review flag in Firebase:', firebaseError);
+      }
+    }
 
     console.log(`✅ Review submitted successfully by: ${name}`);
     res.json({ 
@@ -845,6 +903,13 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 transition: all 0.2s;
             }
             .clear-btn:hover { transform: scale(1.05); }
+            .review-info { 
+                font-size: 11px; 
+                color: #6c757d; 
+                margin-top: 5px; 
+            }
+            .has-review { color: #28a745; }
+            .no-review { color: #dc3545; }
         </style>
     </head>
     <body>
@@ -873,8 +938,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <p>${payments.filter(p => p.delivery.delivered).length}</p>
                 </div>
                 <div class="stat-card">
-                    <h3>📦 Pending</h3>
-                    <p>${payments.filter(p => !p.delivery.delivered).length}</p>
+                    <h3>⭐ Reviews</h3>
+                    <p>${payments.filter(p => p.reviewLeft).length} / ${payments.length}</p>
                 </div>
             </div>
             
@@ -887,6 +952,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
+                        <th>Review</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -927,6 +993,14 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
                         </td>
                         <td>
+                            <div class="review-info ${payment.reviewLeft ? 'has-review' : 'no-review'}">
+                                ${payment.reviewLeft ? 
+                                  `✅ Review by: ${payment.reviewName || 'Unknown'}` : 
+                                  '❌ No review yet'
+                                }
+                            </div>
+                        </td>
+                        <td>
                             ${!payment.delivery.delivered ? 
                               `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
                                 Mark Delivered
@@ -938,7 +1012,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 40px;">
+                        <td colspan="8" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -1195,6 +1269,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                         <th>User</th>
                         <th>Review</th>
                         <th>Date</th>
+                        <th>Transaction ID</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -1210,6 +1285,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                         <td><strong>${review.name}</strong></td>
                         <td>${review.review}</td>
                         <td>${formattedDate}</td>
+                        <td><small>${review.transactionId}</small></td>
                         <td>
                             <button class="delete-btn" onclick="deleteReview(${review.id})">
                                 Delete
@@ -1219,7 +1295,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${reviewsWithId.length === 0 ? `
                     <tr>
-                        <td colspan="5" style="text-align: center; padding: 40px;">
+                        <td colspan="6" style="text-align: center; padding: 40px;">
                             No reviews found.
                         </td>
                     </tr>
@@ -1316,31 +1392,67 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 });
 
 // --- Удалить отзыв (админ) ---
-app.delete("/api/reviews/:id", authMiddleware, (req, res) => {
+app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   const reviewId = parseInt(req.params.id);
-  const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
   
-  if (reviewId < 0 || reviewId >= reviews.length) {
-    return res.status(404).json({ error: "Review not found" });
+  try {
+    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+    
+    if (reviewId < 0 || reviewId >= reviews.length) {
+      return res.status(404).json({ error: "Review not found" });
+    }
+    
+    const deletedReview = reviews[reviewId];
+    
+    // Удаляем отзыв из локального файла
+    reviews.splice(reviewId, 1);
+    fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
+    
+    // 🔥 ДОБАВЛЕНО: Сбрасываем флаг отзыва в Firebase
+    if (db && deletedReview.transactionId) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.where('transactionId', '==', deletedReview.transactionId).get();
+        
+        if (!snapshot.empty) {
+          const paymentDoc = snapshot.docs[0];
+          await paymentDoc.ref.update({
+            reviewLeft: false,
+            reviewName: null,
+            'timestamps.updatedAt': new Date()
+          });
+          console.log(`✅ Review flag reset in Firebase for transaction: ${deletedReview.transactionId}`);
+        }
+      } catch (firebaseError) {
+        console.error('Error resetting review flag in Firebase:', firebaseError);
+      }
+    }
+    
+    res.json({ success: true, message: "Review deleted successfully" });
+  } catch (error) {
+    console.error('❌ Error deleting review:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete review: ' + error.message 
+    });
   }
-  
-  // Удаляем отзыв
-  reviews.splice(reviewId, 1);
-  fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
-  
-  res.json({ success: true, message: "Review deleted successfully" });
 });
 
 // --- Получить все отзывы ---
 app.get("/api/reviews", (req, res) => {
-  const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
-  // 🔥 Возвращаем отзывы с полем name вместо nickname
-  const formattedReviews = reviews.map(review => ({
-    name: review.name || review.nickname, // 🔥 Поддержка старых отзывов
-    review: review.review,
-    date: review.date
-  }));
-  res.json(formattedReviews);
+  try {
+    const reviews = JSON.parse(fs.readFileSync(reviewsFile, "utf-8"));
+    // 🔥 Возвращаем отзывы с полем name вместо nickname
+    const formattedReviews = reviews.map(review => ({
+      name: review.name,
+      review: review.review,
+      date: review.date
+    }));
+    res.json(formattedReviews);
+  } catch (error) {
+    console.error('❌ Error reading reviews:', error);
+    res.status(500).json({ error: 'Failed to read reviews' });
+  }
 });
 
 // --- Старт сервера ---
