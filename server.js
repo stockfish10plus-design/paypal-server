@@ -701,7 +701,7 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 СИСТЕМА ОГРАНИЧЕНИЯ ОТЗЫВОВ: 1 отзыв = 1 покупка
+// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId
 app.post("/api/reviews", async (req, res) => {
   const { name, review, transactionId } = req.body;
   
@@ -712,54 +712,47 @@ app.post("/api/reviews", async (req, res) => {
   try {
     console.log(`📝 New review attempt from: ${name}`);
     
-    // 🔥 ПРОВЕРЯЕМ ЕСТЬ ЛИ ПОКУПКИ У ЭТОГО ПОЛЬЗОВАТЕЛЯ
-    let hasPurchase = false;
+    let hasValidPurchase = false;
     let alreadyReviewed = false;
-    let availableTransactionId = null;
+    let foundTransactionId = null;
 
-    // Проверяем в Firebase
-    if (db) {
+    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
+    if (db && transactionId) {
       try {
         const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.where('buyer.nickname', '==', name).get();
+        const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
         
         if (!snapshot.empty) {
-          hasPurchase = true;
-          console.log(`✅ User ${name} has ${snapshot.size} purchases`);
+          hasValidPurchase = true;
+          const paymentData = snapshot.docs[0].data();
+          foundTransactionId = paymentData.transactionId;
           
-          // Ищем первую покупку без отзыва
-          for (const doc of snapshot.docs) {
-            const paymentData = doc.data();
-            if (!paymentData.reviewLeft) {
-              availableTransactionId = paymentData.transactionId;
-              break;
-            }
-          }
-          
-          // Если все покупки уже имеют отзывы
-          if (!availableTransactionId) {
+          // Проверяем, не оставлен ли уже отзыв для этой транзакции
+          if (paymentData.reviewLeft) {
             alreadyReviewed = true;
-            console.log(`❌ User ${name} already left reviews for all purchases`);
+            console.log(`❌ Transaction ${transactionId} already has a review`);
           }
+        } else {
+          console.log(`❌ No purchase found for transaction: ${transactionId}`);
         }
       } catch (firebaseError) {
         console.error('Firebase check error:', firebaseError);
       }
     }
 
-    // 🔥 ЕСЛИ НЕТ ПОКУПОК - ОТКАЗЫВАЕМ
-    if (!hasPurchase) {
-      console.log(`❌ User ${name} has no purchases - review rejected`);
+    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
+    if (!hasValidPurchase) {
+      console.log(`❌ No valid purchase found for review - rejected`);
       return res.status(403).json({ 
         error: "You can only leave a review after making a purchase" 
       });
     }
 
-    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ВСЕХ ПОКУПОК - ОТКАЗЫВАЕМ
+    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (alreadyReviewed) {
-      console.log(`❌ User ${name} already left reviews for all purchases - rejected`);
+      console.log(`❌ Review already exists for this purchase - rejected`);
       return res.status(403).json({ 
-        error: "You have already left reviews for all your purchases. Thank you!" 
+        error: "You have already left a review for this purchase. Thank you!" 
       });
     }
 
@@ -769,16 +762,16 @@ app.post("/api/reviews", async (req, res) => {
       name,
       review, 
       date: new Date().toISOString(),
-      transactionId: availableTransactionId || transactionId || 'unknown'
+      transactionId: foundTransactionId || transactionId
     };
     reviews.push(newReview);
     fs.writeFileSync(reviewsFile, JSON.stringify(reviews, null, 2));
 
     // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
-    if (db && availableTransactionId) {
+    if (db && foundTransactionId) {
       try {
         const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.where('transactionId', '==', availableTransactionId).get();
+        const snapshot = await paymentsRef.where('transactionId', '==', foundTransactionId).get();
         
         if (!snapshot.empty) {
           const paymentDoc = snapshot.docs[0];
@@ -787,14 +780,14 @@ app.post("/api/reviews", async (req, res) => {
             reviewName: name,
             'timestamps.updatedAt': new Date()
           });
-          console.log(`✅ Review flag updated in Firebase for transaction: ${availableTransactionId}`);
+          console.log(`✅ Review flag updated in Firebase for transaction: ${foundTransactionId}`);
         }
       } catch (firebaseError) {
         console.error('Error updating review flag in Firebase:', firebaseError);
       }
     }
 
-    console.log(`✅ Review submitted successfully by: ${name}`);
+    console.log(`✅ Review submitted successfully by: ${name} for transaction: ${foundTransactionId}`);
     res.json({ 
       success: true, 
       message: "Thank you for your review!" 
