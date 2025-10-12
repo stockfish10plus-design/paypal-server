@@ -741,26 +741,52 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore
+// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore с правильным форматированием дат
 app.get("/api/reviews", async (req, res) => {
+  // 🔥 ДОБАВЛЕНО: Заголовки против кэширования
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  
   try {
     const result = await getReviewsFromFirestore();
     
     if (result.success) {
-      // 🔥 Форматируем отзывы для фронтенда
-      const formattedReviews = result.reviews.map(review => ({
-        name: review.name,
-        review: review.review,
-        date: review.createdAt
-      }));
+      // 🔥 ИСПРАВЛЕННОЕ ФОРМАТИРОВАНИЕ ДАТЫ
+      const formattedReviews = result.reviews.map(review => {
+        let date;
+        
+        // Обрабатываем Firestore Timestamp
+        if (review.createdAt && review.createdAt.toDate) {
+          date = review.createdAt.toDate(); // Конвертируем Firestore Timestamp в Date
+        } else if (review.createdAt) {
+          date = new Date(review.createdAt); // Обычная строка даты
+        } else {
+          date = new Date(); // Fallback
+        }
+        
+        // Форматируем дату
+        const formattedDate = date.toLocaleDateString('ru-RU', {
+          year: 'numeric',
+          month: 'long', 
+          day: 'numeric'
+        });
+        
+        return {
+          name: review.name,
+          review: review.review,
+          date: formattedDate // Теперь это строка, а не объект
+        };
+      });
       
       res.json(formattedReviews);
     } else {
-      throw new Error(result.error);
+      console.log('⚠️ Using fallback empty reviews due to error');
+      res.json([]);
     }
   } catch (error) {
     console.error('❌ Error reading reviews from Firestore:', error);
-    res.status(500).json({ error: 'Failed to read reviews' });
+    res.json([]);
   }
 });
 
@@ -890,9 +916,16 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                 </thead>
                 <tbody>
                     ${reviewsWithId.map(review => {
-                      const reviewDate = review.date && review.date.toDate ? review.date.toDate() : new Date(review.date);
-                      reviewDate.setHours(reviewDate.getHours() + 3);
-                      const formattedDate = reviewDate.toLocaleString('ru-RU');
+                      let date;
+                      if (review.date && review.date.toDate) {
+                        date = review.date.toDate();
+                      } else if (review.date) {
+                        date = new Date(review.date);
+                      } else {
+                        date = new Date();
+                      }
+                      date.setHours(date.getHours() + 3);
+                      const formattedDate = date.toLocaleString('ru-RU');
                       
                       return `
                     <tr id="review-${review.id}">
