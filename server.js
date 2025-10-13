@@ -109,7 +109,8 @@ async function backupToGoogleSheets(paymentData) {
         nickname: paymentData.nickname,
         payerEmail: paymentData.payerEmail,
         amount: paymentData.amount,
-        items: paymentData.items
+        items: paymentData.items,
+        gameType: paymentData.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
       })
     });
     
@@ -294,7 +295,10 @@ async function savePaymentToFirebase(paymentData) {
 
       // 🔥 ДОБАВЛЕНО: Поле для отслеживания оставленных отзывов
       reviewLeft: false,
-      reviewName: null
+      reviewName: null,
+
+      // 🔥 ДОБАВЛЕНО: Поле для типа игры
+      gameType: paymentData.gameType || 'unknown'
     };
     
     await paymentRef.set(firebaseData);
@@ -417,7 +421,12 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
     const stats = {
       localPurchases: 0,
       firebasePurchases: 0,
-      reviews: 0
+      reviews: 0,
+      gameStats: {
+        poe2: 0,
+        poe1: 0,
+        unknown: 0
+      }
     };
 
     // Локальные покупки
@@ -428,12 +437,23 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       stats.localPurchases = 0;
     }
 
-    // Firebase покупки
+    // Firebase покупки и статистика по играм
     if (db) {
       try {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.get();
         stats.firebasePurchases = snapshot.size;
+        
+        // 🔥 ДОБАВЛЕНО: Статистика по играм
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const gameType = data.gameType || 'unknown';
+          if (stats.gameStats[gameType] !== undefined) {
+            stats.gameStats[gameType]++;
+          } else {
+            stats.gameStats.unknown++;
+          }
+        });
       } catch (e) {
         stats.firebasePurchases = 0;
       }
@@ -506,7 +526,8 @@ app.post("/webhook", async (req, res) => {
       status: 'completed',
       nickname: nickname,
       items: details.items,
-      transactionId: details.transactionId
+      transactionId: details.transactionId,
+      gameType: details.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
     };
     
     console.log('💰 Processing payment for Firebase...');
@@ -529,7 +550,8 @@ app.post("/webhook", async (req, res) => {
       nickname: nickname,
       payerEmail: details.payerEmail || 'unknown@email.com',
       amount: details.amount,
-      items: details.items
+      items: details.items,
+      gameType: details.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
     });
     
     if (!googleSheetsResult.success) {
@@ -554,7 +576,7 @@ app.post("/webhook", async (req, res) => {
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         {
           chat_id: TELEGRAM_CHAT_ID,
-          text: `💰 New purchase:
+          text: `💰 New purchase (${details.gameType || 'unknown'}):
 Transaction: ${details.transactionId}
 Buyer: ${nickname}
 Amount: $${details.amount}
@@ -616,7 +638,8 @@ app.post("/api/test-firebase-payment", async (req, res) => {
       status: 'completed',
       nickname: 'Test User',
       items: [{ name: 'Test Product', qty: 1, price: 10.99 }],
-      transactionId: 'test-txn-' + Date.now()
+      transactionId: 'test-txn-' + Date.now(),
+      gameType: 'poe2' // 🔥 ДОБАВЛЕНО: gameType для теста
     };
     
     const result = await savePaymentToFirebase(testPaymentData);
@@ -1074,6 +1097,7 @@ app.get("/local/payments", (req, res) => {
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
+                        <th>Game</th> <!-- 🔥 ДОБАВЛЕНО: Колонка для игры -->
                     </tr>
                 </thead>
                 <tbody>
@@ -1106,11 +1130,12 @@ app.get("/local/payments", (req, res) => {
                         </td>
                         <td>${formattedDate}</td>
                         <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
+                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ДОБАВЛЕНО: Отображение игры -->
                     </tr>
                     `}).join('')}
                     ${purchases.length === 0 ? `
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 40px;">
+                        <td colspan="7" style="text-align: center; padding: 40px;">
                             No payments found in local backup.
                         </td>
                     </tr>
@@ -1241,6 +1266,16 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             .has-review { color: #28a745; }
             .no-review { color: #dc3545; }
+            .game-badge { 
+                padding: 2px 6px; 
+                border-radius: 3px; 
+                font-size: 10px; 
+                font-weight: bold;
+                margin-left: 5px;
+            }
+            .poe2 { background: #0070ba; color: white; }
+            .poe1 { background: #28a745; color: white; }
+            .unknown { background: #6c757d; color: white; }
         </style>
     </head>
     <body>
@@ -1269,8 +1304,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <p>${payments.filter(p => p.delivery.delivered).length}</p>
                 </div>
                 <div class="stat-card">
-                    <h3>⭐ Reviews</h3>
-                    <p>${payments.filter(p => p.reviewLeft).length} / ${payments.length}</p>
+                    <h3>🎮 Games</h3>
+                    <p>PoE2: ${payments.filter(p => p.gameType === 'poe2').length}<br>PoE1: ${payments.filter(p => p.gameType === 'poe1').length}</p>
                 </div>
             </div>
             
@@ -1282,6 +1317,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <th>Amount</th>
                         <th>Items</th>
                         <th>Date</th>
+                        <th>Game</th> <!-- 🔥 ДОБАВЛЕНО: Колонка для игры -->
                         <th>Status</th>
                         <th>Review</th>
                         <th>Action</th>
@@ -1302,6 +1338,10 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         formattedDate = date.toLocaleString('ru-RU');
                       }
                       
+                      const gameType = payment.gameType || 'unknown';
+                      const gameBadgeClass = gameType === 'poe2' ? 'poe2' : gameType === 'poe1' ? 'poe1' : 'unknown';
+                      const gameDisplayName = gameType === 'poe2' ? 'PoE2' : gameType === 'poe1' ? 'PoE1' : 'Unknown';
+                      
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
                         <td><strong>${payment.transactionId}</strong></td>
@@ -1320,6 +1360,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             <small>Total items: ${payment.items.length}</small>
                         </td>
                         <td>${formattedDate}</td>
+                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ДОБАВЛЕНО: Бейдж игры -->
                         <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}" id="status-${payment.id}">
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
                         </td>
@@ -1343,7 +1384,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="8" style="text-align: center; padding: 40px;">
+                        <td colspan="9" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -1359,6 +1400,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <div class="stat-card" style="background: #fff3cd;">
                         <h4>📊 Data Statistics</h4>
                         <p>Local: <span id="local-count">0</span> | Firebase: <span id="firebase-count">0</span> | Reviews: <span id="reviews-count">0</span></p>
+                        <p>Games: PoE2: <span id="poe2-count">0</span> | PoE1: <span id="poe1-count">0</span></p>
                     </div>
                 </div>
 
@@ -1459,6 +1501,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         document.getElementById('local-count').textContent = result.stats.localPurchases;
                         document.getElementById('firebase-count').textContent = result.stats.firebasePurchases;
                         document.getElementById('reviews-count').textContent = result.stats.reviews;
+                        document.getElementById('poe2-count').textContent = result.stats.gameStats.poe2;
+                        document.getElementById('poe1-count').textContent = result.stats.gameStats.poe1;
                     }
                 } catch (error) {
                     console.error('Error loading stats:', error);
@@ -1587,6 +1631,7 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
+  console.log(`🎮 Game types support: PoE2, PoE1`);
   console.log(`📝 Reviews now stored in Firestore collection 'reviews'`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
