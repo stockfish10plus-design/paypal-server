@@ -99,6 +99,9 @@ async function backupToGoogleSheets(paymentData) {
     
     console.log('📤 Sending to Google Sheets...', paymentData.transactionId);
     
+    // 🔥 ИСПРАВЛЕНО: Правильно форматируем данные для Google Sheets
+    const itemsText = paymentData.items.map(item => `${item.name} x${item.qty}`).join(', ');
+    
     const response = await fetch(googleWebhookURL, {
       method: 'POST',
       headers: {
@@ -109,8 +112,9 @@ async function backupToGoogleSheets(paymentData) {
         nickname: paymentData.nickname,
         payerEmail: paymentData.payerEmail,
         amount: paymentData.amount,
-        items: paymentData.items,
-        gameType: paymentData.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
+        items: itemsText,
+        gameType: paymentData.gameType || 'unknown',
+        timestamp: new Date().toISOString()
       })
     });
     
@@ -516,6 +520,10 @@ app.post("/webhook", async (req, res) => {
   const details = req.body;
   const nickname = details.nickname || "No nickname";
 
+  // 🔥 ИСПРАВЛЕНО: Правильно обрабатываем gameType из фронтенда
+  const gameType = details.gameType || 'unknown';
+  console.log(`💰 Processing payment for ${gameType}...`);
+
   // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase с улучшенной структурой
   try {
     const paymentData = {
@@ -527,7 +535,7 @@ app.post("/webhook", async (req, res) => {
       nickname: nickname,
       items: details.items,
       transactionId: details.transactionId,
-      gameType: details.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
+      gameType: gameType // 🔥 ИСПРАВЛЕНО: Используем правильный gameType
     };
     
     console.log('💰 Processing payment for Firebase...');
@@ -551,7 +559,7 @@ app.post("/webhook", async (req, res) => {
       payerEmail: details.payerEmail || 'unknown@email.com',
       amount: details.amount,
       items: details.items,
-      gameType: details.gameType || 'unknown' // 🔥 ДОБАВЛЕНО: gameType
+      gameType: gameType // 🔥 ИСПРАВЛЕНО: Используем правильный gameType
     });
     
     if (!googleSheetsResult.success) {
@@ -576,7 +584,7 @@ app.post("/webhook", async (req, res) => {
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         {
           chat_id: TELEGRAM_CHAT_ID,
-          text: `💰 New purchase (${details.gameType || 'unknown'}):
+          text: `💰 New purchase (${gameType}):
 Transaction: ${details.transactionId}
 Buyer: ${nickname}
 Amount: $${details.amount}
