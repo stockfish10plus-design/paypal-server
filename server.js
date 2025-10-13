@@ -1091,13 +1091,13 @@ app.get("/local/payments", (req, res) => {
             <table>
                 <thead>
                     <tr>
+                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
                         <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
-                        <th>Game</th> <!-- 🔥 ДОБАВЛЕНО: Колонка для игры -->
                     </tr>
                 </thead>
                 <tbody>
@@ -1113,6 +1113,7 @@ app.get("/local/payments", (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
+                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1130,7 +1131,6 @@ app.get("/local/payments", (req, res) => {
                         </td>
                         <td>${formattedDate}</td>
                         <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
-                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ДОБАВЛЕНО: Отображение игры -->
                     </tr>
                     `}).join('')}
                     ${purchases.length === 0 ? `
@@ -1161,7 +1161,7 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Красивый админский интерфейс для платежей с функциями очистки
+// 🔥 ОБНОВЛЕННАЯ АДМИНКА: Game в начале, Review удалено
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -1259,19 +1259,11 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 transition: all 0.2s;
             }
             .clear-btn:hover { transform: scale(1.05); }
-            .review-info { 
-                font-size: 11px; 
-                color: #6c757d; 
-                margin-top: 5px; 
-            }
-            .has-review { color: #28a745; }
-            .no-review { color: #dc3545; }
             .game-badge { 
                 padding: 2px 6px; 
                 border-radius: 3px; 
                 font-size: 10px; 
                 font-weight: bold;
-                margin-left: 5px;
             }
             .poe2 { background: #0070ba; color: white; }
             .poe1 { background: #28a745; color: white; }
@@ -1312,14 +1304,13 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             <table>
                 <thead>
                     <tr>
+                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
                         <th>Items</th>
                         <th>Date</th>
-                        <th>Game</th> <!-- 🔥 ДОБАВЛЕНО: Колонка для игры -->
                         <th>Status</th>
-                        <th>Review</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -1344,6 +1335,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
+                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1360,17 +1352,8 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                             <small>Total items: ${payment.items.length}</small>
                         </td>
                         <td>${formattedDate}</td>
-                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ДОБАВЛЕНО: Бейдж игры -->
                         <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}" id="status-${payment.id}">
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
-                        </td>
-                        <td>
-                            <div class="review-info ${payment.reviewLeft ? 'has-review' : 'no-review'}">
-                                ${payment.reviewLeft ? 
-                                  `✅ Review by: ${payment.reviewName || 'Unknown'}` : 
-                                  '❌ No review yet'
-                                }
-                            </div>
                         </td>
                         <td>
                             ${!payment.delivery.delivered ? 
@@ -1384,7 +1367,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="9" style="text-align: center; padding: 40px;">
+                        <td colspan="8" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
