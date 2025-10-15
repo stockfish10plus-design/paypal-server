@@ -20,8 +20,15 @@ const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
 // 🔥 ОБНОВЛЕНО: Настройки CORS для фронтенда
 app.use(cors({
-  origin: ['https://your-frontend-domain.com', 'http://localhost:3000', '*'],
-  credentials: true
+  origin: [
+    'https://poestock.net',
+    'https://www.poestock.net', 
+    'http://localhost:3000',
+    'http://localhost:8080'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(bodyParser.json());
 
