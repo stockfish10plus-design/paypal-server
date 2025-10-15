@@ -92,13 +92,13 @@ console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' 
 console.log('db object:', db ? 'EXISTS' : 'NULL');
 console.log('==========================');
 
-// 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
+// 🔥 УЛУЧШЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets с улучшенным логированием
 async function backupToGoogleSheets(paymentData) {
   try {
     const googleWebhookURL = 'https://script.google.com/macros/s/1gW-NXI4qNsHqlFLIcST4WESickwPIXT13b7p6TKIMk8ZQozGgBazrtnT/exec';
     
-    console.log('📤 Sending to Google Sheets...');
-    console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
+    console.log('📤 ===== SENDING TO GOOGLE SHEETS =====');
+    console.log('📋 Original payment data:', JSON.stringify(paymentData, null, 2));
 
     // 🔥 ИСПРАВЛЕННЫЙ ФОРМАТ ДАННЫХ
     const sheetsData = {
@@ -108,41 +108,65 @@ async function backupToGoogleSheets(paymentData) {
       amount: paymentData.amount || '0',
       items: paymentData.items || [],
       gameType: paymentData.gameType || 'unknown',
-      status: 'completed' // 🔥 ЯВНО УСТАНАВЛИВАЕМ STATUS
+      status: 'completed'
     };
 
-    console.log('📨 Data for Google Sheets:', JSON.stringify(sheetsData, null, 2));
+    console.log('📨 Data being sent to Google Sheets:', JSON.stringify(sheetsData, null, 2));
+    console.log('🔗 Google Sheets URL:', googleWebhookURL);
 
-    const response = await fetch(googleWebhookURL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(sheetsData)
-    });
+    // 🔥 ДОБАВЛЯЕМ ТАЙМАУТ И ПЕРЕХВАТ ОШИБОК СЕТИ
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 секунд таймаут
 
-    console.log('📞 Google Sheets response status:', response.status);
-    
-    const responseText = await response.text();
-    console.log('📄 Google Sheets response text:', responseText);
-
-    let result;
     try {
-      result = JSON.parse(responseText);
-    } catch (parseError) {
-      console.log('⚠️ Google Sheets returned non-JSON response:', responseText);
-      result = { success: false, error: 'Invalid JSON response', response: responseText };
-    }
+      const response = await fetch(googleWebhookURL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sheetsData),
+        signal: controller.signal
+      });
 
-    console.log('✅ Google Sheets backup result:', result.success ? 'SUCCESS' : 'FAILED');
-    
-    if (!result.success) {
-      console.error('❌ Google Sheets error:', result.error);
-    } else {
-      console.log('🎉 Google Sheets backup completed successfully');
-    }
+      clearTimeout(timeoutId);
 
-    return result;
+      console.log('📞 Google Sheets response status:', response.status);
+      console.log('📞 Google Sheets response headers:', JSON.stringify(Object.fromEntries(response.headers.entries())));
+      
+      const responseText = await response.text();
+      console.log('📄 Google Sheets response text:', responseText);
+
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (parseError) {
+        console.log('⚠️ Google Sheets returned non-JSON response:', responseText);
+        result = { success: false, error: 'Invalid JSON response', response: responseText };
+      }
+
+      console.log('✅ Google Sheets backup result:', result.success ? 'SUCCESS' : 'FAILED');
+      
+      if (!result.success) {
+        console.error('❌ Google Sheets error:', result.error);
+      } else {
+        console.log('🎉 Google Sheets backup completed successfully');
+        console.log('📊 Position:', result.position || 'unknown');
+        console.log('🎮 Game Type:', result.gameType || 'unknown');
+      }
+
+      return result;
+      
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      
+      if (fetchError.name === 'AbortError') {
+        console.error('❌ Google Sheets request timeout (10 seconds)');
+        return { success: false, error: 'Request timeout' };
+      } else {
+        console.error('❌ Google Sheets network error:', fetchError.message);
+        return { success: false, error: 'Network error: ' + fetchError.message };
+      }
+    }
     
   } catch (error) {
     console.error('❌ Google Sheets backup failed:', error.message);
@@ -509,7 +533,8 @@ app.get("/", (req, res) => {
       webhook: "/webhook",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)"
+      testGoogleSheets: "/api/test-google-sheets (POST)",
+      debugWebhook: "/api/debug-webhook (POST)"
     },
     status: "active",
     timestamp: new Date().toISOString()
@@ -533,7 +558,66 @@ app.post("/api/login", (req, res) => {
   });
 });
 
-// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С ИСПРАВЛЕННЫМ GOOGLE SHEETS
+// 🔥 ДОБАВЛЕНО: Диагностический эндпоинт для Google Sheets
+app.post("/api/debug-webhook", async (req, res) => {
+  try {
+    console.log('🔧 DEBUG WEBHOOK CALLED');
+    
+    const testData = {
+      transactionId: "DEBUG_" + Date.now(),
+      nickname: "DebugUser",
+      payerEmail: "debug@test.com",
+      amount: "99.99",
+      items: [
+        { name: "Debug Orb (PoE1)", qty: 1, price: 99.99 }
+      ],
+      gameType: "poe1",
+      status: "completed"
+    };
+
+    console.log('📤 Sending DEBUG data to Google Sheets...');
+    console.log('📋 Debug data:', JSON.stringify(testData, null, 2));
+
+    const googleWebhookURL = 'https://script.google.com/macros/s/1gW-NXI4qNsHqlFLIcST4WESickwPIXT13b7p6TKIMk8ZQozGgBazrtnT/exec';
+
+    const response = await fetch(googleWebhookURL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(testData)
+    });
+
+    console.log('📞 Google Sheets response status:', response.status);
+    
+    const responseText = await response.text();
+    console.log('📄 Google Sheets response text:', responseText);
+
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (parseError) {
+      console.log('⚠️ Google Sheets returned non-JSON response:', responseText);
+      result = { success: false, error: 'Invalid JSON response', response: responseText };
+    }
+
+    res.json({
+      server: "Debug data sent",
+      sheetsResponse: result,
+      status: response.status,
+      dataSent: testData
+    });
+
+  } catch (error) {
+    console.error('❌ Debug error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С УЛУЧШЕННОЙ ДИАГНОСТИКОЙ
 app.post("/webhook", async (req, res) => {
   const details = req.body;
   const nickname = details.nickname || "No nickname";
@@ -545,6 +629,15 @@ app.post("/webhook", async (req, res) => {
   console.log('💳 Transaction ID:', details.transactionId);
   console.log('💰 Amount:', details.amount);
   console.log('📦 Items:', JSON.stringify(details.items, null, 2));
+
+  // 🔥 ПРОВЕРЯЕМ, ЧТО ДАННЫЕ ПРИШЛИ КОРРЕКТНО
+  if (!details.transactionId) {
+    console.error('❌ CRITICAL: No transactionId in webhook data!');
+  }
+
+  if (!details.amount) {
+    console.error('❌ CRITICAL: No amount in webhook data!');
+  }
 
   // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase
   try {
@@ -572,23 +665,46 @@ app.post("/webhook", async (req, res) => {
     console.error('❌ Firebase processing error:', firebaseError);
   }
 
-  // 🔥 ИСПРАВЛЕННАЯ ОТПРАВКА В GOOGLE SHEETS
+  // 🔥 УЛУЧШЕННАЯ ОТПРАВКА В GOOGLE SHEETS С ДИАГНОСТИКОЙ
   try {
-    console.log('📤 Sending to Google Sheets...');
+    console.log('📤 ===== ATTEMPTING GOOGLE SHEETS BACKUP =====');
+    
     const googleSheetsResult = await backupToGoogleSheets({
       transactionId: details.transactionId,
       nickname: nickname,
       payerEmail: details.payerEmail || 'unknown@email.com',
       amount: details.amount,
       items: details.items,
-      gameType: gameType, // 🔥 ПРАВИЛЬНЫЙ gameType
-      status: 'completed' // 🔥 ЯВНЫЙ STATUS
+      gameType: gameType,
+      status: 'completed'
     });
     
     if (!googleSheetsResult.success) {
-      console.error('❌ Google Sheets save error:', googleSheetsResult.error);
+      console.error('❌ Google Sheets save failed:', googleSheetsResult.error);
+      
+      // 🔥 СОХРАНЯЕМ ОШИБКУ В FIREBASE ДЛЯ ДАЛЬНЕЙШЕГО АНАЛИЗА
+      if (db) {
+        try {
+          const errorRef = db.collection('sheet_errors').doc();
+          await errorRef.set({
+            transactionId: details.transactionId,
+            error: googleSheetsResult.error,
+            data: {
+              transactionId: details.transactionId,
+              nickname: nickname,
+              amount: details.amount,
+              gameType: gameType
+            },
+            timestamp: new Date()
+          });
+          console.log('✅ Sheet error saved to Firebase for analysis');
+        } catch (errorSaveError) {
+          console.error('❌ Could not save sheet error to Firebase:', errorSaveError);
+        }
+      }
     } else {
       console.log('✅ Payment saved to Google Sheets successfully');
+      console.log('📊 Sheets response:', JSON.stringify(googleSheetsResult, null, 2));
     }
   } catch (googleSheetsError) {
     console.error('❌ Google Sheets processing error:', googleSheetsError);
@@ -621,7 +737,12 @@ ${itemsText}`
   }
 
   console.log('✅ ===== WEBHOOK PROCESSING COMPLETE =====');
-  res.status(200).send("OK");
+  res.status(200).json({ 
+    success: true, 
+    message: "Webhook processed",
+    firebase: "saved", 
+    googleSheets: "attempted"
+  });
 });
 
 // 🔧 ДОБАВЛЕНО: Тестовый маршрут для проверки Firebase
@@ -1696,6 +1817,7 @@ app.listen(PORT, () => {
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
   console.log(`🔧 Test Google Sheets: POST https://paypal-server-46qg.onrender.com/api/test-google-sheets`);
+  console.log(`🔧 Debug Webhook: POST https://paypal-server-46qg.onrender.com/api/debug-webhook`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
