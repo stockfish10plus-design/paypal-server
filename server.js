@@ -18,6 +18,9 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
+// 🔥 ДОБАВЛЕНО: Конфигурация авто-подтверждения
+const AUTO_CONFIRM_DELAY = 24 * 60 * 60 * 1000; // 24 часа
+
 // 🔥 ОБНОВЛЕНО: Настройки CORS для вашего домена
 app.use(cors({
   origin: [
@@ -102,6 +105,84 @@ console.log('FIREBASE_CLIENT_EMAIL:', process.env.FIREBASE_CLIENT_EMAIL ? 'SET' 
 console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' + process.env.FIREBASE_PRIVATE_KEY.length + ' chars)' : 'NOT SET');
 console.log('db object:', db ? 'EXISTS' : 'NULL');
 console.log('==========================');
+
+// 🔥 ДОБАВЛЕНО: Система подтверждения доставки
+async function notifyBuyerForConfirmation(transactionId, buyerEmail, nickname) {
+  try {
+    console.log(`📧 Sending delivery confirmation to buyer: ${nickname}`);
+    
+    const confirmLink = `https://poestock.net/order-status.html?transaction=${transactionId}`;
+    
+    // В реальной системе здесь был бы email
+    // Пока просто логируем
+    console.log(`🔗 Confirmation link for ${nickname}: ${confirmLink}`);
+    
+    return { success: true, confirmLink };
+  } catch (error) {
+    console.error('❌ Error notifying buyer:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function setupAutoConfirmation(transactionId) {
+  try {
+    console.log(`⏰ Setting up auto-confirmation for: ${transactionId}`);
+    
+    setTimeout(async () => {
+      try {
+        const paymentRef = db.collection('payments');
+        const snapshot = await paymentRef.where('transactionId', '==', transactionId).get();
+        
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          const payment = doc.data();
+          
+          // Автоподтверждаем только если:
+          // - Доставка отмечена
+          // - Покупатель не подтвердил
+          // - Нет спора
+          if (payment.delivery.delivered && 
+              !payment.delivery.confirmedByBuyer && 
+              !payment.delivery.disputeOpened) {
+            
+            await doc.ref.update({
+              'delivery.autoConfirmed': true,
+              'delivery.confirmedAt': new Date(),
+              'timestamps.updatedAt': new Date()
+            });
+            
+            console.log(`✅ Auto-confirmed delivery for: ${transactionId}`);
+            
+            // Здесь будет вызов NowPayments API для разблокировки денег
+            await releaseNowPaymentsFunds(transactionId);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Auto-confirmation error:', error);
+      }
+    }, AUTO_CONFIRM_DELAY);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error setting up auto-confirmation:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function releaseNowPaymentsFunds(transactionId) {
+  try {
+    console.log(`💰 Releasing NowPayments funds for: ${transactionId}`);
+    
+    // В реальной системе здесь будет вызов NowPayments API
+    // Для демо просто логируем
+    console.log(`✅ Funds released for: ${transactionId}`);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error releasing funds:', error);
+    return { success: false, error: error.message };
+  }
+}
 
 // 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
@@ -367,9 +448,15 @@ async function savePaymentToFirebase(paymentData) {
         updatedAt: new Date()
       },
       
+      // 🔥 ОБНОВЛЕНО: Расширенная система доставки
       delivery: {
         delivered: false,
-        deliveredAt: null
+        deliveredAt: null,
+        confirmedByBuyer: false, // 🔥 НОВОЕ: Подтверждение от покупателя
+        confirmedAt: null,       // 🔥 НОВОЕ: Когда подтверждено
+        autoConfirmed: false,    // 🔥 НОВОЕ: Автоподтверждение
+        disputeOpened: false,    // 🔥 НОВОЕ: Открыт ли спор
+        disputeResolved: false   // 🔥 НОВОЕ: Решен ли спор
       },
 
       reviewLeft: false,
@@ -737,6 +824,159 @@ app.get("/api/nowpayments-status", async (req, res) => {
   }
 });
 
+// 🔥 ДОБАВЛЕНО: НОВЫЕ API ДЛЯ СИСТЕМЫ ПОДТВЕРЖДЕНИЯ
+
+// 🔥 API: Получить статус заказа для покупателя
+app.get("/api/order-status/:transactionId", async (req, res) => {
+  try {
+    const transactionId = req.params.transactionId;
+    
+    const paymentRef = db.collection('payments');
+    const snapshot = await paymentRef.where('transactionId', '==', transactionId).get();
+    
+    if (snapshot.empty) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    const order = snapshot.docs[0].data();
+    
+    // Форматируем ответ для покупателя
+    const orderStatus = {
+      transactionId: order.transactionId,
+      nickname: order.buyer.nickname,
+      items: order.items,
+      amount: order.amount,
+      gameType: order.gameType,
+      status: order.delivery.delivered ? 'delivered' : 'pending',
+      delivered: order.delivery.delivered,
+      deliveredAt: order.delivery.deliveredAt,
+      confirmedByBuyer: order.delivery.confirmedByBuyer,
+      confirmedAt: order.delivery.confirmedAt,
+      autoConfirmed: order.delivery.autoConfirmed,
+      paymentMethod: order.paymentMethod,
+      createdAt: order.timestamps.createdAt
+    };
+    
+    res.json({
+      success: true,
+      order: orderStatus
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting order status:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get order status: ' + error.message 
+    });
+  }
+});
+
+// 🔥 API: Подтверждение получения от покупателя
+app.post("/api/confirm-receipt", async (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    
+    console.log(`✅ Buyer confirming receipt for: ${transactionId}`);
+    
+    const paymentRef = db.collection('payments');
+    const snapshot = await paymentRef.where('transactionId', '==', transactionId).get();
+    
+    if (snapshot.empty) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    const doc = snapshot.docs[0];
+    const order = doc.data();
+    
+    // Проверяем, что заказ доставлен
+    if (!order.delivery.delivered) {
+      return res.status(400).json({
+        success: false,
+        error: 'Order not yet delivered'
+      });
+    }
+    
+    // Обновляем статус подтверждения
+    await doc.ref.update({
+      'delivery.confirmedByBuyer': true,
+      'delivery.confirmedAt': new Date(),
+      'timestamps.updatedAt': new Date()
+    });
+    
+    console.log(`✅ Buyer confirmed receipt for: ${transactionId}`);
+    
+    // Разблокируем деньги в NowPayments
+    await releaseNowPaymentsFunds(transactionId);
+    
+    res.json({ 
+      success: true, 
+      message: 'Thank you for confirming receipt! Payment has been released to the seller.' 
+    });
+    
+  } catch (error) {
+    console.error('❌ Error confirming receipt:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to confirm receipt: ' + error.message 
+    });
+  }
+});
+
+// 🔥 API: Автоматическое подтверждение просроченных доставок
+app.post("/api/auto-confirm-deliveries", async (req, res) => {
+  try {
+    console.log('🔄 Checking for auto-confirmable deliveries...');
+    
+    const cutoffTime = new Date(Date.now() - AUTO_CONFIRM_DELAY);
+    
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef
+      .where('delivery.delivered', '==', true)
+      .where('delivery.confirmedByBuyer', '==', false)
+      .where('delivery.deliveredAt', '<=', cutoffTime)
+      .where('delivery.disputeOpened', '==', false)
+      .get();
+    
+    let confirmedCount = 0;
+    
+    for (const doc of snapshot.docs) {
+      const payment = doc.data();
+      
+      // Автоматически подтверждаем
+      await doc.ref.update({
+        'delivery.autoConfirmed': true,
+        'delivery.confirmedAt': new Date(),
+        'timestamps.updatedAt': new Date()
+      });
+      
+      // Разблокируем деньги
+      await releaseNowPaymentsFunds(payment.transactionId);
+      
+      confirmedCount++;
+      console.log(`✅ Auto-confirmed delivery for: ${payment.transactionId}`);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Auto-confirmed ${confirmedCount} deliveries`,
+      confirmed: confirmedCount 
+    });
+    
+  } catch (error) {
+    console.error('❌ Error auto-confirming deliveries:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to auto-confirm deliveries: ' + error.message 
+    });
+  }
+});
+
 // 🔥 ДОБАВЛЕНО: Функции очистки данных
 app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
   try {
@@ -840,6 +1080,14 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       paymentMethods: {
         paypal: 0,
         crypto: 0
+      },
+      // 🔥 ДОБАВЛЕНО: Статистика доставки
+      deliveryStats: {
+        pending: 0,
+        delivered: 0,
+        confirmed: 0,
+        autoConfirmed: 0,
+        disputed: 0
       }
     };
 
@@ -869,6 +1117,27 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
           
           if (stats.paymentMethods[paymentMethod] !== undefined) {
             stats.paymentMethods[paymentMethod]++;
+          }
+          
+          // 🔥 Сбор статистики доставки
+          if (data.delivery) {
+            if (!data.delivery.delivered) {
+              stats.deliveryStats.pending++;
+            } else {
+              stats.deliveryStats.delivered++;
+              
+              if (data.delivery.confirmedByBuyer) {
+                stats.deliveryStats.confirmed++;
+              }
+              
+              if (data.delivery.autoConfirmed) {
+                stats.deliveryStats.autoConfirmed++;
+              }
+              
+              if (data.delivery.disputeOpened) {
+                stats.deliveryStats.disputed++;
+              }
+            }
           }
         });
       } catch (e) {
@@ -901,6 +1170,9 @@ app.get("/", (req, res) => {
       nowpaymentsStatus: "/api/nowpayments-status",
       createCryptoPayment: "/api/create-crypto-payment (POST)",
       paymentStatus: "/api/payment-status/:payment_id",
+      orderStatus: "/api/order-status/:transactionId",
+      confirmReceipt: "/api/confirm-receipt (POST)",
+      autoConfirm: "/api/auto-confirm-deliveries (POST)",
       adminPayments: "/admin/payments (requires login)",
       adminReviews: "/admin/reviews (requires login)", 
       localPayments: "/local/payments (backup view)",
@@ -1650,6 +1922,31 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             }
             .paypal-badge { background: #0070ba; color: white; }
             .crypto-badge { background: #764ba2; color: white; }
+            /* 🔥 НОВЫЕ СТИЛИ ДЛЯ СИСТЕМЫ ПОДТВЕРЖДЕНИЯ */
+            .confirmed-badge { 
+                background: #28a745; 
+                color: white; 
+                padding: 2px 6px; 
+                border-radius: 3px; 
+                font-size: 10px; 
+                font-weight: bold;
+                margin-left: 5px;
+            }
+            .auto-confirmed-badge { 
+                background: #ffc107; 
+                color: black; 
+                padding: 2px 6px; 
+                border-radius: 3px; 
+                font-size: 10px; 
+                font-weight: bold;
+                margin-left: 5px;
+            }
+            .order-link { 
+                color: #0070ba; 
+                text-decoration: underline; 
+                cursor: pointer;
+                font-size: 11px;
+            }
         </style>
     </head>
     <body>
@@ -1724,11 +2021,30 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                       const paymentBadgeClass = paymentMethod === 'crypto' ? 'crypto-badge' : 'paypal-badge';
                       const paymentDisplayName = paymentMethod === 'crypto' ? 'Crypto' : 'PayPal';
                       
+                      // 🔥 НОВОЕ: Статус подтверждения
+                      let confirmationStatus = '';
+                      if (payment.delivery.confirmedByBuyer) {
+                        confirmationStatus = '<span class="confirmed-badge">Confirmed</span>';
+                      } else if (payment.delivery.autoConfirmed) {
+                        confirmationStatus = '<span class="auto-confirmed-badge">Auto-Confirmed</span>';
+                      } else if (payment.delivery.delivered) {
+                        confirmationStatus = '<span style="color: #ffc107; font-size: 10px;">Waiting Confirm</span>';
+                      }
+                      
+                      // 🔥 НОВОЕ: Ссылка на страницу статуса
+                      const orderLink = `https://poestock.net/order-status.html?transaction=${payment.transactionId}`;
+                      
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
                         <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td>
-                        <td><span class="payment-badge ${paymentBadgeClass}">${paymentDisplayName}</span></td>
-                        <td><strong>${payment.transactionId}</strong></td>
+                        <td>
+                            <span class="payment-badge ${paymentBadgeClass}">${paymentDisplayName}</span>
+                            ${confirmationStatus}
+                        </td>
+                        <td>
+                            <strong>${payment.transactionId}</strong>
+                            <div class="order-link" onclick="copyOrderLink('${orderLink}')">Copy Order Link</div>
+                        </td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
                             <small>${payment.buyer.email}</small>
@@ -1746,10 +2062,12 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <td>${formattedDate}</td>
                         <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}" id="status-${payment.id}">
                             ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
+                            ${payment.delivery.delivered && !payment.delivery.confirmedByBuyer && !payment.delivery.autoConfirmed ? 
+                              '<div style="font-size: 10px; color: #ffc107;">Auto-confirm in 24h</div>' : ''}
                         </td>
                         <td>
                             ${!payment.delivery.delivered ? 
-                              `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
+                              `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}', '${payment.buyer.nickname}')" id="btn-${payment.id}">
                                 Mark Delivered
                               </button>` : 
                               '<span style="color: #28a745;">✅ Done</span>'
@@ -1776,6 +2094,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <p>Local: <span id="local-count">0</span> | Firebase: <span id="firebase-count">0</span> | Reviews: <span id="reviews-count">0</span></p>
                         <p>Games: PoE2: <span id="poe2-count">0</span> | PoE1: <span id="poe1-count">0</span></p>
                         <p>Payments: PayPal: <span id="paypal-count">0</span> | Crypto: <span id="crypto-count">0</span></p>
+                        <p>Delivery: Pending: <span id="pending-count">0</span> | Delivered: <span id="delivered-count">0</span> | Confirmed: <span id="confirmed-count">0</span></p>
                     </div>
                 </div>
 
@@ -1784,6 +2103,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <button class="clear-btn" onclick="clearData('firebase')" style="background: #fd7e14; color: #000;">🔥 Clear Firebase</button>
                     <button class="clear-btn" onclick="clearData('all')" style="background: #dc3545; color: white;">💥 Clear All</button>
                     <button class="clear-btn" onclick="clearReviews()" style="background: #e83e8c; color: white;">⭐ Clear Reviews</button>
+                    <button class="clear-btn" onclick="autoConfirmDeliveries()" style="background: #28a745; color: white;">🔄 Auto-Confirm</button>
                 </div>
                 
                 <p style="color: #856404; font-size: 12px; margin-top: 10px; margin-bottom: 0;">
@@ -1793,7 +2113,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
         </div>
 
         <script>
-            async function markAsDelivered(paymentId, transactionId) {
+            async function markAsDelivered(paymentId, transactionId, nickname) {
                 const btn = document.getElementById('btn-' + paymentId);
                 const statusCell = document.getElementById('status-' + paymentId);
                 const row = document.getElementById('row-' + paymentId);
@@ -1810,18 +2130,29 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         },
                         body: JSON.stringify({
                             transactionId: transactionId,
-                            paymentId: paymentId
+                            paymentId: paymentId,
+                            nickname: nickname
                         })
                     });
                     
                     const result = await response.json();
                     
                     if (result.success) {
-                        statusCell.innerHTML = '✅ Delivered';
+                        statusCell.innerHTML = '✅ Delivered<div style="font-size: 10px; color: #ffc107;">Auto-confirm in 24h</div>';
                         statusCell.className = 'status-delivered';
                         row.className = 'delivered';
                         btn.outerHTML = '<span style="color: #28a745;">✅ Done</span>';
-                        showNotification('Order marked as delivered!', 'success');
+                        
+                        // Обновляем бейдж подтверждения
+                        const paymentBadgeCell = row.cells[1];
+                        paymentBadgeCell.innerHTML = paymentBadgeCell.innerHTML.replace('</span>', '</span><span style="color: #ffc107; font-size: 10px;">Waiting Confirm</span>');
+                        
+                        showNotification('Order marked as delivered! Funds will auto-release in 24 hours.', 'success');
+                        
+                        // Показываем ссылку для покупателя
+                        if (result.confirmLink) {
+                            showNotification('Buyer confirmation link: ' + result.confirmLink, 'info', 10000);
+                        }
                     } else {
                         throw new Error(result.error);
                     }
@@ -1832,12 +2163,18 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }
             }
             
+            function copyOrderLink(link) {
+                navigator.clipboard.writeText(link);
+                showNotification('Order link copied to clipboard!', 'success');
+            }
+            
             function getTokenFromUrl() {
                 const urlParams = new URLSearchParams(window.location.search);
                 return urlParams.get('token');
             }
             
-            function showNotification(message, type) {
+            function showNotification(message, type, duration = 3000) {
+                // Существующая функция показа уведомлений
                 const notification = document.createElement('div');
                 notification.style.cssText = \`
                     position: fixed;
@@ -1850,7 +2187,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     z-index: 1000;
                     opacity: 0;
                     transition: opacity 0.3s;
-                    background-color: \${type === 'success' ? '#28a745' : '#dc3545'};
+                    background-color: \${type === 'success' ? '#28a745' : type === 'error' ? '#dc3545' : '#17a2b8'};
                 \`;
                 notification.textContent = message;
                 
@@ -1861,7 +2198,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 setTimeout(() => {
                     notification.style.opacity = '0';
                     setTimeout(() => notification.remove(), 300);
-                }, 3000);
+                }, duration);
             }
 
             async function loadStats() {
@@ -1879,6 +2216,9 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         document.getElementById('poe1-count').textContent = result.stats.gameStats.poe1;
                         document.getElementById('paypal-count').textContent = result.stats.paymentMethods.paypal;
                         document.getElementById('crypto-count').textContent = result.stats.paymentMethods.crypto;
+                        document.getElementById('pending-count').textContent = result.stats.deliveryStats.pending;
+                        document.getElementById('delivered-count').textContent = result.stats.deliveryStats.delivered;
+                        document.getElementById('confirmed-count').textContent = result.stats.deliveryStats.confirmed;
                     }
                 } catch (error) {
                     console.error('Error loading stats:', error);
@@ -1945,6 +2285,32 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }
             }
 
+            async function autoConfirmDeliveries() {
+                if (!confirm('Auto-confirm all deliveries that are over 24 hours old?')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/auto-confirm-deliveries', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification('✅ ' + result.message, 'success');
+                        setTimeout(() => window.location.reload(), 2000);
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    showNotification('❌ Error: ' + error.message, 'error');
+                }
+            }
+
             loadStats();
         </script>
     </body>
@@ -1960,9 +2326,9 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
   }
 });
 
-// --- Пометить заказ как выданный (обновленная версия) ---
+// --- Пометить заказ как выданный (ОБНОВЛЕННАЯ версия) ---
 app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
-  const { transactionId, paymentId } = req.body;
+  const { transactionId, paymentId, nickname } = req.body;
   
   try {
     const paymentRef = db.collection('payments').doc(paymentId);
@@ -1986,11 +2352,18 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       console.error('❌ Error updating local backup:', localError);
     }
     
+    // 🔥 ДОБАВЛЕНО: Уведомление покупателю и авто-подтверждение
+    const notifyResult = await notifyBuyerForConfirmation(transactionId, 'buyer@example.com', nickname);
+    await setupAutoConfirmation(transactionId);
+    
     console.log(`✅ Order ${transactionId} marked as delivered`);
+    
     res.json({ 
       success: true, 
-      message: 'Order marked as delivered successfully' 
+      message: 'Order marked as delivered successfully',
+      confirmLink: notifyResult.confirmLink
     });
+    
   } catch (error) {
     console.error('❌ Error marking order as delivered:', error);
     res.status(500).json({ 
@@ -1998,6 +2371,272 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       error: 'Failed to mark order as delivered: ' + error.message 
     });
   }
+});
+
+// 🔥 ДОБАВЛЕНО: Страница статуса заказа для покупателя
+app.get("/order-status.html", (req, res) => {
+  const html = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <title>Order Status - PoE Stock</title>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+          body { 
+              font-family: Arial, sans-serif; 
+              background: #f8f9fa; 
+              margin: 0; 
+              padding: 20px; 
+          }
+          .status-container { 
+              max-width: 600px; 
+              margin: 50px auto; 
+              background: white; 
+              padding: 30px; 
+              border-radius: 10px; 
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+          }
+          .status-pending { 
+              background: #fff3cd; 
+              border: 1px solid #ffeaa7; 
+              padding: 20px; 
+              border-radius: 8px;
+              margin-bottom: 20px;
+          }
+          .status-delivered { 
+              background: #d4edda; 
+              border: 1px solid #c3e6cb; 
+              padding: 20px; 
+              border-radius: 8px;
+              margin-bottom: 20px;
+          }
+          .status-completed { 
+              background: #d1ecf1; 
+              border: 1px solid #bee5eb; 
+              padding: 20px; 
+              border-radius: 8px;
+              margin-bottom: 20px;
+          }
+          .confirm-btn { 
+              background: #28a745; 
+              color: white; 
+              padding: 12px 24px; 
+              border: none; 
+              border-radius: 5px; 
+              cursor: pointer; 
+              font-size: 16px;
+              font-weight: bold;
+              margin-top: 15px;
+          }
+          .confirm-btn:hover { 
+              background: #218838; 
+          }
+          .confirm-btn:disabled { 
+              background: #6c757d; 
+              cursor: not-allowed; 
+          }
+          .back-link {
+              color: #0070ba;
+              text-decoration: none;
+              font-weight: bold;
+          }
+          .back-link:hover {
+              text-decoration: underline;
+          }
+          .items-list {
+              background: white;
+              padding: 15px;
+              border-radius: 5px;
+              margin: 10px 0;
+          }
+          .notification {
+              padding: 15px;
+              border-radius: 5px;
+              margin: 10px 0;
+              font-weight: bold;
+          }
+          .notification.info {
+              background: #d1ecf1;
+              color: #0c5460;
+              border: 1px solid #bee5eb;
+          }
+          .notification.success {
+              background: #d4edda;
+              color: #155724;
+              border: 1px solid #c3e6cb;
+          }
+      </style>
+  </head>
+  <body>
+      <div class="status-container">
+          <h1>📦 Order Status</h1>
+          <p><a href="/" class="back-link">← Back to Shop</a></p>
+          
+          <div id="status-display">
+              <p>Loading order status...</p>
+          </div>
+          
+          <div id="notification-area"></div>
+      </div>
+
+      <script>
+          const urlParams = new URLSearchParams(window.location.search);
+          const transactionId = urlParams.get('transaction');
+
+          if (!transactionId) {
+              document.getElementById('status-display').innerHTML = \`
+                  <div class="notification info">
+                      <h3>❌ Order Not Found</h3>
+                      <p>Please check your order link or contact support.</p>
+                  </div>
+              \`;
+          }
+
+          async function loadOrderStatus() {
+              try {
+                  const response = await fetch(\`/api/order-status/\${transactionId}\`);
+                  const result = await response.json();
+                  
+                  if (!result.success) {
+                      throw new Error(result.error);
+                  }
+                  
+                  const order = result.order;
+                  const statusDiv = document.getElementById('status-display');
+                  
+                  if (!order.delivered) {
+                      statusDiv.innerHTML = \`
+                          <div class="status-pending">
+                              <h3>🕐 Waiting for Delivery</h3>
+                              <p><strong>Transaction ID:</strong> \${order.transactionId}</p>
+                              <p><strong>Buyer:</strong> \${order.nickname}</p>
+                              <p><strong>Game:</strong> \${order.gameType.toUpperCase()}</p>
+                              <div class="items-list">
+                                  <strong>Items:</strong>
+                                  \${order.items.map(item => \`
+                                      <div>• \${item.name} x\${item.quantity} ($$\${item.subtotal})</div>
+                                  \`).join('')}
+                              </div>
+                              <p><strong>Total Amount:</strong> $\${order.amount.total} \${order.amount.currency}</p>
+                              <p><strong>Payment Method:</strong> \${order.paymentMethod}</p>
+                              <p>Seller will deliver your items in-game soon. Please wait for an in-game party invite.</p>
+                              <p><em>You can confirm receipt after delivery is completed.</em></p>
+                          </div>
+                      \`;
+                  } else if (order.delivered && !order.confirmedByBuyer && !order.autoConfirmed) {
+                      statusDiv.innerHTML = \`
+                          <div class="status-delivered">
+                              <h3>✅ Items Delivered!</h3>
+                              <p><strong>Transaction ID:</strong> \${order.transactionId}</p>
+                              <p><strong>Buyer:</strong> \${order.nickname}</p>
+                              <div class="items-list">
+                                  <strong>Items Received:</strong>
+                                  \${order.items.map(item => \`
+                                      <div>• \${item.name} x\${item.quantity}</div>
+                                  \`).join('')}
+                              </div>
+                              <p><strong>Delivered at:</strong> \${new Date(order.deliveredAt?.toDate?.() || order.deliveredAt).toLocaleString()}</p>
+                              
+                              <p>Please confirm that you received all items correctly:</p>
+                              <button class="confirm-btn" onclick="confirmReceipt()">
+                                  ✅ I received my items
+                              </button>
+                              
+                              <p style="margin-top: 15px; font-size: 12px; color: #666;">
+                                  <em>If you don't confirm within 24 hours, funds will be automatically released to the seller.</em>
+                              </p>
+                          </div>
+                      \`;
+                  } else if (order.confirmedByBuyer || order.autoConfirmed) {
+                      statusDiv.innerHTML = \`
+                          <div class="status-completed">
+                              <h3>🎉 Order Completed!</h3>
+                              <p><strong>Transaction ID:</strong> \${order.transactionId}</p>
+                              <p><strong>Buyer:</strong> \${order.nickname}</p>
+                              <div class="items-list">
+                                  <strong>Items Purchased:</strong>
+                                  \${order.items.map(item => \`
+                                      <div>• \${item.name} x\${item.quantity} ($$\${item.subtotal})</div>
+                                  \`).join('')}
+                              </div>
+                              <p><strong>Total:</strong> $\${order.amount.total} \${order.amount.currency}</p>
+                              <p><strong>Status:</strong> \${order.confirmedByBuyer ? 'Confirmed by you' : 'Auto-confirmed'} on \${new Date(order.confirmedAt?.toDate?.() || order.confirmedAt).toLocaleString()}</p>
+                              
+                              <p>Thank you for your purchase! Consider leaving a review to help other buyers.</p>
+                              
+                              <button class="confirm-btn" style="background: #0070ba;" onclick="window.location.href='/'">
+                                  🛒 Continue Shopping
+                              </button>
+                          </div>
+                      \`;
+                  }
+                  
+              } catch (error) {
+                  document.getElementById('status-display').innerHTML = \`
+                      <div class="notification info">
+                          <h3>❌ Error Loading Order</h3>
+                          <p>\${error.message}</p>
+                          <p>Please check your transaction ID or contact support.</p>
+                      </div>
+                  \`;
+              }
+          }
+
+          async function confirmReceipt() {
+              const btn = document.querySelector('.confirm-btn');
+              const notificationArea = document.getElementById('notification-area');
+              
+              btn.disabled = true;
+              btn.textContent = 'Confirming...';
+              
+              try {
+                  const response = await fetch('/api/confirm-receipt', {
+                      method: 'POST',
+                      headers: {
+                          'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({ transactionId })
+                  });
+                  
+                  const result = await response.json();
+                  
+                  if (result.success) {
+                      notificationArea.innerHTML = \`
+                          <div class="notification success">
+                              ✅ \${result.message}
+                          </div>
+                      \`;
+                      
+                      btn.style.display = 'none';
+                      
+                      // Reload status after confirmation
+                      setTimeout(loadOrderStatus, 2000);
+                  } else {
+                      throw new Error(result.error);
+                  }
+                  
+              } catch (error) {
+                  notificationArea.innerHTML = \`
+                      <div class="notification info" style="background: #f8d7da; color: #721c24;">
+                          ❌ Error: \${error.message}
+                      </div>
+                  \`;
+                  btn.disabled = false;
+                  btn.textContent = '✅ I received my items';
+              }
+          }
+
+          // Load order status on page load
+          if (transactionId) {
+              loadOrderStatus();
+          }
+      </script>
+  </body>
+  </html>
+  `;
+  
+  res.send(html);
 });
 
 // --- Старт сервера ---
@@ -2008,10 +2647,12 @@ app.listen(PORT, () => {
   console.log(`🎮 Game types support: PoE2, PoE1`);
   console.log(`💳 Payment methods: PayPal, NowPayments (Crypto)`);
   console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
+  console.log(`🔄 Auto-confirmation system: ENABLED (24 hours)`);
   console.log(`🔧 Test NowPayments: https://paypal-server-46qg.onrender.com/api/nowpayments-status`);
   console.log(`🔧 Create Crypto Payment: POST https://paypal-server-46qg.onrender.com/api/create-crypto-payment`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
+  console.log(`📦 Order Status: https://paypal-server-46qg.onrender.com/order-status.html`);
   console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
   console.log(`💰 NowPayments Webhook: https://paypal-server-46qg.onrender.com/webhook/nowpayments`);
