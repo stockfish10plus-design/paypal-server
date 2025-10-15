@@ -18,7 +18,7 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-// 🔥 ОБНОВЛЕНО: Настройки CORS для фронтенда
+// 🔥 ОБНОВЛЕНО: Настройки CORS для вашего домена
 app.use(cors({
   origin: [
     'https://poestock.net',
@@ -161,7 +161,7 @@ async function backupToGoogleSheets(paymentData) {
   }
 }
 
-// 🔥 ДОБАВЛЕНО: Функция для создания платежа в NowPayments
+// 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для создания платежа в NowPayments
 async function createNowPaymentsPayment(paymentData) {
   try {
     const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
@@ -192,7 +192,13 @@ async function createNowPaymentsPayment(paymentData) {
     });
 
     console.log('✅ NowPayments payment created:', response.data);
-    return { success: true, data: response.data };
+    
+    // 🔥 ИСПРАВЛЕНИЕ: Возвращаем payment_url
+    return { 
+      success: true, 
+      data: response.data,
+      payment_url: `https://nowpayments.io/payment/?iid=${response.data.payment_id}`
+    };
     
   } catch (error) {
     console.error('❌ NowPayments API error:', error.response?.data || error.message);
@@ -395,7 +401,7 @@ async function savePaymentToFirebase(paymentData) {
   }
 }
 
-// 🔥 ДОБАВЛЕНО: API для создания платежа NowPayments
+// 🔥 ОБНОВЛЕННЫЙ API: Для создания платежа NowPayments
 app.post("/api/create-crypto-payment", async (req, res) => {
   try {
     const { amount, nickname, gameType, items, success_url, cancel_url } = req.body;
@@ -414,8 +420,8 @@ app.post("/api/create-crypto-payment", async (req, res) => {
       pay_currency: 'btc',
       order_id: order_id,
       order_description: `PoE Currency - ${nickname} (${gameType})`,
-      success_url: success_url || 'https://your-frontend-domain.com',
-      cancel_url: cancel_url || 'https://your-frontend-domain.com',
+      success_url: success_url || 'https://poestock.net',
+      cancel_url: cancel_url || 'https://poestock.net',
       nickname: nickname,
       gameType: gameType,
       items: items || []
@@ -440,9 +446,10 @@ app.post("/api/create-crypto-payment", async (req, res) => {
       
       await savePaymentToFirebase(pendingPayment);
       
+      // 🔥 ВОЗВРАЩАЕМ payment_url фронтенду
       res.json({
         success: true,
-        payment_url: nowpaymentsResult.data.invoice_url,
+        payment_url: nowpaymentsResult.payment_url, // 🔥 ЭТО ОБЯЗАТЕЛЬНО
         payment_id: nowpaymentsResult.data.payment_id,
         order_id: order_id
       });
@@ -497,9 +504,11 @@ app.post("/webhook/nowpayments", async (req, res) => {
   console.log('📦 Payment data:', JSON.stringify(paymentData, null, 2));
 
   try {
+    // Проверяем статус платежа
     if (paymentData.payment_status === 'finished' || paymentData.payment_status === 'confirmed') {
       console.log('✅ NowPayments payment successful');
       
+      // Извлекаем данные из order_id
       const orderId = paymentData.order_id || '';
       const { nickname, gameType } = extractFromOrderId(orderId);
       
@@ -510,7 +519,7 @@ app.post("/webhook/nowpayments", async (req, res) => {
         paymentId: paymentData.payment_id,
         status: 'completed',
         nickname: nickname,
-        items: [],
+        items: [], // NowPayments не передает детали корзины
         transactionId: paymentData.payment_id,
         gameType: gameType,
         paymentMethod: 'crypto'
@@ -525,6 +534,7 @@ app.post("/webhook/nowpayments", async (req, res) => {
         console.log('✅ NowPayments payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
       }
 
+      // Отправляем в Google Sheets
       try {
         console.log('📤 Sending NowPayments payment to Google Sheets...');
         const googleSheetsResult = await backupToGoogleSheets(processedData);
@@ -538,6 +548,7 @@ app.post("/webhook/nowpayments", async (req, res) => {
         console.error('❌ Google Sheets processing error:', googleSheetsError);
       }
 
+      // Telegram уведомление
       const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
       const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
