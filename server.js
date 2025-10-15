@@ -92,22 +92,23 @@ console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' 
 console.log('db object:', db ? 'EXISTS' : 'NULL');
 console.log('==========================');
 
-// 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
+// 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
-    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbxhYagfBjtQG81iwWDewT4Q4rQ1JDBnMHCRrvyyisKZ2wGe6yYEa-6YATXloLNyf96a/exec';
+    const googleWebhookURL = 'https://script.google.com/macros/s/1gW-NXI4qNsHqlFLIcST4WESickwPIXT13b7p6TKIMk8ZQozGgBazrtnT/exec';
     
     console.log('📤 Sending to Google Sheets...');
     console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
 
-    // 🔥 ФОРМАТ ДАННЫХ ДЛЯ НОВОГО GOOGLE APPS SCRIPT
+    // 🔥 ИСПРАВЛЕННЫЙ ФОРМАТ ДАННЫХ
     const sheetsData = {
       transactionId: paymentData.transactionId || 'N/A',
       nickname: paymentData.nickname || 'No nickname',
       payerEmail: paymentData.payerEmail || 'No email',
       amount: paymentData.amount || '0',
       items: paymentData.items || [],
-      gameType: paymentData.gameType || 'unknown'
+      gameType: paymentData.gameType || 'unknown',
+      status: 'completed' // 🔥 ЯВНО УСТАНАВЛИВАЕМ STATUS
     };
 
     console.log('📨 Data for Google Sheets:', JSON.stringify(sheetsData, null, 2));
@@ -236,7 +237,6 @@ if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8"
 
 // 🔥 ИЗМЕНЕНО: Убираем локальный файл для отзывов, так как теперь используем Firestore
 const reviewsFile = path.join(__dirname, "reviews.json");
-// Файл оставляем для обратной совместимости, но основной источник - Firestore
 
 // 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
@@ -533,7 +533,7 @@ app.post("/api/login", (req, res) => {
   });
 });
 
-// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ
+// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С ИСПРАВЛЕННЫМ GOOGLE SHEETS
 app.post("/webhook", async (req, res) => {
   const details = req.body;
   const nickname = details.nickname || "No nickname";
@@ -572,7 +572,7 @@ app.post("/webhook", async (req, res) => {
     console.error('❌ Firebase processing error:', firebaseError);
   }
 
-  // 🔥 ДОБАВЛЕНО: Отправляем в Google Sheets СРАЗУ ПОСЛЕ Firebase
+  // 🔥 ИСПРАВЛЕННАЯ ОТПРАВКА В GOOGLE SHEETS
   try {
     console.log('📤 Sending to Google Sheets...');
     const googleSheetsResult = await backupToGoogleSheets({
@@ -581,7 +581,8 @@ app.post("/webhook", async (req, res) => {
       payerEmail: details.payerEmail || 'unknown@email.com',
       amount: details.amount,
       items: details.items,
-      gameType: gameType
+      gameType: gameType, // 🔥 ПРАВИЛЬНЫЙ gameType
+      status: 'completed' // 🔥 ЯВНЫЙ STATUS
     });
     
     if (!googleSheetsResult.success) {
@@ -670,7 +671,7 @@ app.post("/api/test-firebase-payment", async (req, res) => {
       nickname: 'Test User',
       items: [{ name: 'Test Product', qty: 1, price: 10.99 }],
       transactionId: 'test-txn-' + Date.now(),
-      gameType: 'poe2' // 🔥 ДОБАВЛЕНО: gameType для теста
+      gameType: 'poe2'
     };
     
     const result = await savePaymentToFirebase(testPaymentData);
@@ -710,7 +711,8 @@ app.post("/api/test-google-sheets", async (req, res) => {
         { name: 'Exalted Orb', qty: 2, price: 5.00 },
         { name: 'Divine Orb', qty: 1, price: 1.50 }
       ],
-      gameType: 'poe2'
+      gameType: 'poe2',
+      status: 'completed'
     };
 
     console.log('📤 Sending test data to Google Sheets...');
@@ -1166,7 +1168,7 @@ app.get("/local/payments", (req, res) => {
             <table>
                 <thead>
                     <tr>
-                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <th>Game</th>
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
@@ -1188,7 +1190,7 @@ app.get("/local/payments", (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
-                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <td><strong>${payment.gameType || 'unknown'}</strong></td>
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1379,7 +1381,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             <table>
                 <thead>
                     <tr>
-                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <th>Game</th>
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
@@ -1410,7 +1412,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
-                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td>
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
