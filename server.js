@@ -95,7 +95,7 @@ console.log('==========================');
 // 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
-    const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbxhYagfBjtQG81iwWDewT4Q4rQ1JDBnMHCRrvyyisKZ2wGe6yYEa-6YATXloLNyf96a/exec';
+    const googleWebhookURL = 'https://script.google.com/macros/s/1gW-NXI4qNsHqlFLIcST4WESickwPIXT13b7p6TKIMk8ZQozGgBazrtnT/exec';
     
     console.log('📤 Sending to Google Sheets...');
     console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
