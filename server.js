@@ -7,7 +7,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken"); 
 require("dotenv").config();
 
-// 🔥 ДОБАВЛЕНО: Подключаем Firebase
+// 🔥 Подключаем Firebase
 const { db } = require('./firebase-config');
 
 const app = express();
@@ -21,7 +21,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
+// 🔥 Функции для работы с отзывами в Firestore
 async function saveReviewToFirestore(reviewData) {
   try {
     console.log('💾 Saving review to Firestore...');
@@ -84,15 +84,39 @@ async function deleteReviewFromFirestore(reviewId) {
   }
 }
 
-// 🔧 ДОБАВЛЕНО: Диагностика Firebase при старте
-console.log('=== FIREBASE DEBUG INFO ===');
-console.log('FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? 'SET' : 'NOT SET');
-console.log('FIREBASE_CLIENT_EMAIL:', process.env.FIREBASE_CLIENT_EMAIL ? 'SET' : 'NOT SET');
-console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' + process.env.FIREBASE_PRIVATE_KEY.length + ' chars)' : 'NOT SET');
-console.log('db object:', db ? 'EXISTS' : 'NULL');
-console.log('==========================');
+// 🔥 Функции для извлечения данных из PayPal
+function findTransactionId(data) {
+  return data.transactionId || 
+         data.paymentId || 
+         data.id || 
+         `UNKNOWN_${Date.now()}`;
+}
 
-// 🔥 УЛУЧШЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets с улучшенным логированием
+function findNickname(data) {
+  return data.nickname || 
+         data.payer?.name?.given_name || 
+         'No nickname';
+}
+
+function findPayerEmail(data) {
+  return data.payerEmail || 
+         data.payer?.email_address || 
+         'No email';
+}
+
+function findAmount(data) {
+  return data.amount || '0';
+}
+
+function findItems(data) {
+  return data.items || [{ name: 'Unknown Item', qty: 1, price: 0 }];
+}
+
+function findGameType(data) {
+  return data.gameType || 'unknown';
+}
+
+// 🔥 Функция для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
     const googleWebhookURL = 'https://script.google.com/macros/s/1gW-NXI4qNsHqlFLIcST4WESickwPIXT13b7p6TKIMk8ZQozGgBazrtnT/exec';
@@ -100,7 +124,6 @@ async function backupToGoogleSheets(paymentData) {
     console.log('📤 ===== SENDING TO GOOGLE SHEETS =====');
     console.log('📋 Payment data for sheets:', JSON.stringify(paymentData, null, 2));
 
-    // 🔥 ИСПРАВЛЕННЫЙ ФОРМАТ ДАННЫХ
     const sheetsData = {
       transactionId: paymentData.transactionId || 'N/A',
       nickname: paymentData.nickname || 'No nickname',
@@ -112,11 +135,9 @@ async function backupToGoogleSheets(paymentData) {
     };
 
     console.log('📨 Data being sent to Google Sheets:', JSON.stringify(sheetsData, null, 2));
-    console.log('🔗 Google Sheets URL:', googleWebhookURL);
 
-    // 🔥 ДОБАВЛЯЕМ ТАЙМАУТ И ПЕРЕХВАТ ОШИБОК СЕТИ
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 секунд таймаут
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       const response = await fetch(googleWebhookURL, {
@@ -150,8 +171,6 @@ async function backupToGoogleSheets(paymentData) {
         console.error('❌ Google Sheets error:', result.error);
       } else {
         console.log('🎉 Google Sheets backup completed successfully');
-        console.log('📊 Position:', result.position || 'unknown');
-        console.log('🎮 Game Type:', result.gameType || 'unknown');
       }
 
       return result;
@@ -170,63 +189,11 @@ async function backupToGoogleSheets(paymentData) {
     
   } catch (error) {
     console.error('❌ Google Sheets backup failed:', error.message);
-    console.error('🔍 Error details:', error.stack);
     return { success: false, error: error.message };
   }
 }
 
-// 🔥 ДОБАВЛЕНО: Функции для извлечения данных из разных форматов PayPal
-function findTransactionId(data) {
-  // Ищем transactionId в разных полях
-  return data.transactionId || 
-         data.paymentId || 
-         data.id || 
-         data.transaction_id || 
-         `UNKNOWN_${Date.now()}`;
-}
-
-function findNickname(data) {
-  return data.nickname || 
-         data.buyer_username || 
-         data.payer?.name || 
-         'No nickname';
-}
-
-function findPayerEmail(data) {
-  return data.payerEmail || 
-         data.payer_email || 
-         data.payer?.email_address || 
-         'No email';
-}
-
-function findAmount(data) {
-  // Ищем amount в разных форматах
-  if (data.amount) return data.amount;
-  if (data.purchase_units && data.purchase_units[0]?.amount?.value) {
-    return data.purchase_units[0].amount.value;
-  }
-  if (data.transaction_amount) return data.transaction_amount;
-  return '0';
-}
-
-function findItems(data) {
-  // Ищем items в разных форматах
-  if (data.items && Array.isArray(data.items)) return data.items;
-  if (data.purchase_units && data.purchase_units[0]?.items) {
-    return data.purchase_units[0].items.map(item => ({
-      name: item.name,
-      qty: item.quantity || 1,
-      price: item.unit_amount?.value || 0
-    }));
-  }
-  return [{ name: 'Unknown Item', qty: 1, price: 0 }];
-}
-
-function findGameType(data) {
-  return data.gameType || 'unknown';
-}
-
-// --- УЛУЧШЕННЫЙ Middleware для JWT ---
+// --- Middleware для JWT ---
 function authMiddleware(req, res, next) {
   const tokenFromUrl = req.query.token;
   const authHeader = req.headers["authorization"];
@@ -306,23 +273,20 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// --- Файлы для заказов/отзывов ---
+// --- Файлы для заказов ---
 const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
-// 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
+// 🔥 Функция для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
     
-    // Проверяем, нет ли уже такой транзакции
     const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
     
     if (existingIndex !== -1) {
-      // Обновляем существующую запись
       purchases[existingIndex] = paymentData;
     } else {
-      // Добавляем новую запись
       purchases.push(paymentData);
     }
     
@@ -335,7 +299,7 @@ function savePaymentToLocal(paymentData) {
   }
 }
 
-// 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция сохранения платежа в Firebase
+// 🔥 Функция сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
   console.log('🔄 Attempting to save to Firebase...');
   
@@ -386,11 +350,9 @@ async function savePaymentToFirebase(paymentData) {
         deliveredAt: null
       },
 
-      // 🔥 ДОБАВЛЕНО: Поле для отслеживания оставленных отзывов
       reviewLeft: false,
       reviewName: null,
 
-      // 🔥 ДОБАВЛЕНО: Поле для типа игры
       gameType: paymentData.gameType || 'unknown'
     };
     
@@ -398,10 +360,9 @@ async function savePaymentToFirebase(paymentData) {
     
     console.log('✅ Successfully saved to Firebase, ID:', paymentRef.id);
     
-    // 🔥 ДОБАВЛЕНО: Сохраняем также в локальный файл
     const localSaveResult = savePaymentToLocal({
       ...firebaseData,
-      firebaseId: paymentRef.id  // Сохраняем ID из Firebase для связи
+      firebaseId: paymentRef.id
     });
     
     return { 
@@ -411,25 +372,208 @@ async function savePaymentToFirebase(paymentData) {
     };
   } catch (error) {
     console.error('❌ Firebase save error:', error);
-    console.error('❌ Error details:', error.message);
     return { success: false, error: error.message };
   }
 }
 
-// 🔥 ДОБАВЛЕНО: Диагностический эндпоинт для анализа данных PayPal
+// 🔥 ГЛАВНЫЙ WEBHOOK ДЛЯ PAYPAL
+app.post("/webhook", async (req, res) => {
+  console.log('💰 ===== PAYPAL WEBHOOK RECEIVED =====');
+  
+  try {
+    const details = req.body;
+    
+    // 🔥 ДИАГНОСТИКА ВХОДЯЩИХ ДАННЫХ
+    console.log('🔍 INCOMING DATA STRUCTURE:');
+    console.log('- transactionId:', details.transactionId);
+    console.log('- paymentId:', details.paymentId);
+    console.log('- nickname:', details.nickname);
+    console.log('- payer object:', details.payer);
+    console.log('- amount:', details.amount);
+    console.log('- items:', details.items);
+    console.log('- gameType:', details.gameType);
+    
+    // 🔥 СОХРАНЯЕМ СЫРЫЕ ДАННЫЕ
+    if (db) {
+      try {
+        const rawRef = db.collection('raw_webhooks').doc();
+        await rawRef.set({
+          data: details,
+          headers: req.headers,
+          timestamp: new Date(),
+          diagnostic: 'MAIN_WEBHOOK_CALLED'
+        });
+        console.log('✅ Raw webhook saved to Firebase');
+      } catch (error) {
+        console.error('❌ Failed to save raw webhook:', error);
+      }
+    }
+    
+    // 🔥 ИЗВЛЕКАЕМ ДАННЫЕ
+    const transactionId = findTransactionId(details);
+    const nickname = findNickname(details);
+    const payerEmail = findPayerEmail(details);
+    const amount = findAmount(details);
+    const items = findItems(details);
+    const gameType = findGameType(details);
+    
+    console.log('🎯 EXTRACTED DATA:');
+    console.log('- transactionId:', transactionId);
+    console.log('- nickname:', nickname);
+    console.log('- payerEmail:', payerEmail);
+    console.log('- amount:', amount);
+    console.log('- items count:', items.length);
+    console.log('- gameType:', gameType);
+    
+    // 🔥 ПРОВЕРЯЕМ КРИТИЧЕСКИЕ ДАННЫЕ
+    if (!transactionId || amount === '0') {
+      console.error('❌ MISSING CRITICAL DATA');
+      
+      if (db) {
+        try {
+          const problemRef = db.collection('problem_webhooks').doc();
+          await problemRef.set({
+            data: details,
+            extracted: { transactionId, nickname, payerEmail, amount, items, gameType },
+            timestamp: new Date(),
+            reason: 'MISSING_CRITICAL_DATA'
+          });
+          console.log('✅ Problem webhook saved for analysis');
+        } catch (error) {
+          console.error('❌ Failed to save problem webhook:', error);
+        }
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing critical data',
+        extracted: { transactionId, amount }
+      });
+    }
+    
+    // 🔥 ПОДГОТАВЛИВАЕМ ДАННЫЕ ДЛЯ СОХРАНЕНИЯ
+    const paymentData = {
+      transactionId: transactionId,
+      paymentId: transactionId,
+      amount: amount,
+      currency: 'USD',
+      payerEmail: payerEmail,
+      status: 'completed',
+      nickname: nickname,
+      items: items,
+      gameType: gameType
+    };
+    
+    console.log('💾 FINAL PAYMENT DATA:', JSON.stringify(paymentData, null, 2));
+    
+    // 🔥 СОХРАНЯЕМ В FIREBASE
+    let firebaseResult = { success: false };
+    try {
+      console.log('🔥 Saving to Firebase...');
+      firebaseResult = await savePaymentToFirebase(paymentData);
+      
+      if (firebaseResult.success) {
+        console.log('✅ Payment saved to Firebase, ID:', firebaseResult.paymentId);
+      } else {
+        console.error('❌ Firebase save failed:', firebaseResult.error);
+      }
+    } catch (firebaseError) {
+      console.error('❌ Firebase processing error:', firebaseError);
+    }
+    
+    // 🔥 ОТПРАВЛЯЕМ В GOOGLE SHEETS
+    let googleSheetsResult = { success: false };
+    try {
+      console.log('📤 Sending to Google Sheets...');
+      googleSheetsResult = await backupToGoogleSheets(paymentData);
+      
+      if (googleSheetsResult.success) {
+        console.log('✅ Google Sheets backup successful');
+      } else {
+        console.error('❌ Google Sheets failed:', googleSheetsResult.error);
+        
+        // 🔥 СОХРАНЯЕМ ОШИБКУ
+        if (db) {
+          try {
+            const errorRef = db.collection('sheet_errors').doc();
+            await errorRef.set({
+              transactionId: transactionId,
+              error: googleSheetsResult.error,
+              data: paymentData,
+              timestamp: new Date(),
+              firebaseSaved: firebaseResult.success
+            });
+            console.log('✅ Sheet error saved to Firebase');
+          } catch (errorSaveError) {
+            console.error('❌ Could not save sheet error:', errorSaveError);
+          }
+        }
+      }
+    } catch (googleSheetsError) {
+      console.error('❌ Google Sheets processing error:', googleSheetsError);
+    }
+    
+    // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
+    const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+    const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+    
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+      try {
+        const itemsText = items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
+        
+        await axios.post(
+          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+          {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: `💰 New ${gameType} Purchase:
+Transaction: ${transactionId}
+Buyer: ${nickname} (${payerEmail})
+Amount: $${amount}
+
+Items:
+${itemsText}
+
+Status:
+Firebase: ${firebaseResult.success ? '✅' : '❌'}
+Google Sheets: ${googleSheetsResult.success ? '✅' : '❌'}`
+          }
+        );
+        console.log('✅ Telegram notification sent');
+      } catch (err) {
+        console.error("❌ Telegram error:", err.message);
+      }
+    }
+    
+    console.log('✅ ===== WEBHOOK PROCESSING COMPLETE =====');
+    res.status(200).json({ 
+      success: true, 
+      message: "Webhook processed",
+      firebase: firebaseResult.success,
+      googleSheets: googleSheetsResult.success,
+      transactionId: transactionId
+    });
+    
+  } catch (error) {
+    console.error('💥 UNEXPECTED ERROR:', error);
+    
+    res.status(500).json({ 
+      success: false, 
+      error: "Internal server error" 
+    });
+  }
+});
+
+// 🔥 ДИАГНОСТИЧЕСКИЙ ЭНДПОИНТ
 app.post("/webhook-debug", async (req, res) => {
   console.log('🔧 ===== WEBHOOK DEBUG =====');
   console.log('📦 RAW REQUEST BODY:', JSON.stringify(req.body, null, 2));
-  console.log('📦 REQUEST HEADERS:', JSON.stringify(req.headers, null, 2));
   
-  // Сохраняем сырые данные для анализа
   const rawData = {
     headers: req.headers,
     body: req.body,
     timestamp: new Date().toISOString()
   };
   
-  // Сохраняем в Firebase для анализа
   if (db) {
     try {
       const debugRef = db.collection('webhook_debug').doc();
@@ -440,7 +584,6 @@ app.post("/webhook-debug", async (req, res) => {
     }
   }
   
-  // Анализируем структуру данных
   console.log('🔍 DATA STRUCTURE ANALYSIS:');
   console.log('- transactionId:', req.body.transactionId);
   console.log('- paymentId:', req.body.paymentId);
@@ -450,18 +593,6 @@ app.post("/webhook-debug", async (req, res) => {
   console.log('- items:', req.body.items);
   console.log('- gameType:', req.body.gameType);
   
-  // Проверяем, есть ли данные в других полях
-  console.log('🔍 CHECKING ALTERNATIVE FIELDS:');
-  Object.keys(req.body).forEach(key => {
-    if (key.toLowerCase().includes('trans') || 
-        key.toLowerCase().includes('payment') ||
-        key.toLowerCase().includes('amount') ||
-        key.toLowerCase().includes('item')) {
-      console.log(`- ${key}:`, req.body[key]);
-    }
-  });
-  
-  // Тестируем извлечение данных
   console.log('🎯 TESTING DATA EXTRACTION:');
   console.log('- Found transactionId:', findTransactionId(req.body));
   console.log('- Found nickname:', findNickname(req.body));
@@ -485,336 +616,53 @@ app.post("/webhook-debug", async (req, res) => {
   });
 });
 
-// 🔥 ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ WEBHOOK ДЛЯ РЕАЛЬНЫХ ДАННЫХ PAYPAL
-app.post("/webhook", async (req, res) => {
-  console.log('💰 ===== PAYPAL WEBHOOK RECEIVED =====');
-  
+// 🔥 ТЕСТ GOOGLE SHEETS С РЕАЛЬНЫМИ ДАННЫМИ
+app.post("/api/test-sheets-with-real-data", async (req, res) => {
   try {
-    const details = req.body;
+    console.log('🧪 TESTING GOOGLE SHEETS WITH REAL DATA...');
     
-    // 🔥 ДИАГНОСТИКА: Сохраняем сырые данные
-    if (db) {
-      try {
-        const rawRef = db.collection('raw_webhooks').doc();
-        await rawRef.set({
-          data: details,
-          headers: req.headers,
-          timestamp: new Date()
-        });
-        console.log('✅ Raw webhook saved to Firebase');
-      } catch (error) {
-        console.error('❌ Failed to save raw webhook:', error);
-      }
-    }
+    const testData = {
+      transactionId: "TEST_REAL_" + Date.now(),
+      nickname: "вавава",
+      payerEmail: "test@example.com",
+      amount: "1.75",
+      items: [
+        { name: "Divine Orb (PoE1)", qty: 1, price: 1.25 },
+        { name: "Chaos Orb (PoE1)", qty: 1, price: 0.5 }
+      ],
+      gameType: "poe1"
+    };
+
+    console.log('📋 Test data:', JSON.stringify(testData, null, 2));
     
-    // 🔥 ИЩЕМ ДАННЫЕ В РАЗНЫХ ФОРМАТАХ PAYPAL
-    const transactionId = findTransactionId(details);
-    const nickname = findNickname(details);
-    const payerEmail = findPayerEmail(details);
-    const amount = findAmount(details);
-    const items = findItems(details);
-    const gameType = findGameType(details);
+    const result = await backupToGoogleSheets(testData);
     
-    console.log('🎯 EXTRACTED DATA:');
-    console.log('- transactionId:', transactionId);
-    console.log('- nickname:', nickname);
-    console.log('- payerEmail:', payerEmail);
-    console.log('- amount:', amount);
-    console.log('- items:', JSON.stringify(items, null, 2));
-    console.log('- gameType:', gameType);
-    
-    // 🔥 ЕСЛИ НЕТ КРИТИЧЕСКИХ ДАННЫХ - ЛОГИРУЕМ И ВЫХОДИМ
-    if (!transactionId || transactionId.includes('UNKNOWN') || amount === '0') {
-      console.error('❌ MISSING CRITICAL DATA - transactionId or amount not found');
-      console.log('📦 FULL DATA FOR ANALYSIS:', JSON.stringify(details, null, 2));
-      
-      // Сохраняем проблемные данные для анализа
-      if (db) {
-        try {
-          const problemRef = db.collection('problem_webhooks').doc();
-          await problemRef.set({
-            data: details,
-            extracted: { transactionId, nickname, payerEmail, amount, items, gameType },
-            timestamp: new Date()
-          });
-          console.log('✅ Problem webhook saved for analysis');
-        } catch (error) {
-          console.error('❌ Failed to save problem webhook:', error);
-        }
-      }
-      
-      return res.status(400).json({ 
+    if (result.success) {
+      res.json({ 
+        success: true, 
+        message: '✅ Real data test successful',
+        testData: testData,
+        sheetsResponse: result
+      });
+    } else {
+      res.status(500).json({ 
         success: false, 
-        error: 'Missing critical data',
-        extracted: { transactionId, amount }
+        error: '❌ Real data test failed: ' + result.error,
+        testData: testData,
+        sheetsResponse: result
       });
     }
-    
-    // 🔥 ПОДГОТОВЛИВАЕМ ДАННЫЕ ДЛЯ СОХРАНЕНИЯ
-    const paymentData = {
-      transactionId: transactionId,
-      paymentId: transactionId, // Используем transactionId как paymentId
-      amount: amount,
-      currency: 'USD',
-      payerEmail: payerEmail,
-      status: 'completed',
-      nickname: nickname,
-      items: items,
-      gameType: gameType
-    };
-    
-    console.log('💾 FINAL PAYMENT DATA FOR SAVING:', JSON.stringify(paymentData, null, 2));
-    
-    // 🔥 СОХРАНЯЕМ В FIREBASE
-    let firebaseResult = { success: false };
-    try {
-      console.log('🔥 Saving to Firebase...');
-      firebaseResult = await savePaymentToFirebase(paymentData);
-      
-      if (!firebaseResult.success) {
-        console.error('❌ Firebase save error:', firebaseResult.error);
-      } else {
-        console.log('✅ Payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
-      }
-    } catch (firebaseError) {
-      console.error('❌ Firebase processing error:', firebaseError);
-    }
-    
-    // 🔥 ОТПРАВЛЯЕМ В GOOGLE SHEETS
-    let googleSheetsResult = { success: false };
-    try {
-      console.log('📤 Attempting Google Sheets backup...');
-      googleSheetsResult = await backupToGoogleSheets(paymentData);
-      
-      if (!googleSheetsResult.success) {
-        console.error('❌ Google Sheets save failed:', googleSheetsResult.error);
-        
-        // 🔥 СОХРАНЯЕМ ОШИБКУ В FIREBASE ДЛЯ ДАЛЬНЕЙШЕГО АНАЛИЗА
-        if (db) {
-          try {
-            const errorRef = db.collection('sheet_errors').doc();
-            await errorRef.set({
-              transactionId: transactionId,
-              error: googleSheetsResult.error,
-              data: paymentData,
-              timestamp: new Date()
-            });
-            console.log('✅ Sheet error saved to Firebase for analysis');
-          } catch (errorSaveError) {
-            console.error('❌ Could not save sheet error to Firebase:', errorSaveError);
-          }
-        }
-      } else {
-        console.log('✅ Payment saved to Google Sheets successfully');
-        console.log('📊 Sheets response:', JSON.stringify(googleSheetsResult, null, 2));
-      }
-    } catch (googleSheetsError) {
-      console.error('❌ Google Sheets processing error:', googleSheetsError);
-    }
-    
-    // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
-    const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-    const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-    
-    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-      try {
-        const itemsText = items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
-        
-        await axios.post(
-          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-          {
-            chat_id: TELEGRAM_CHAT_ID,
-            text: `💰 New purchase (${gameType}):
-  Transaction: ${transactionId}
-  Buyer: ${nickname}
-  Amount: $${amount}
-  Items:
-  ${itemsText}
-  
-  Firebase: ${firebaseResult.success ? '✅' : '❌'}
-  Google Sheets: ${googleSheetsResult.success ? '✅' : '❌'}`
-          }
-        );
-        console.log('✅ Telegram notification sent');
-      } catch (err) {
-        console.error("❌ Telegram error:", err.message);
-      }
-    }
-    
-    console.log('✅ ===== WEBHOOK PROCESSING COMPLETE =====');
-    res.status(200).json({ 
-      success: true, 
-      message: "Webhook processed successfully",
-      firebase: firebaseResult.success ? "saved" : "failed", 
-      googleSheets: googleSheetsResult.success ? "saved" : "failed",
-      transactionId: transactionId
-    });
-    
   } catch (error) {
-    console.error('💥 UNEXPECTED ERROR IN WEBHOOK:', error);
-    console.error('🔍 Error stack:', error.stack);
-    
+    console.error('❌ Real data test error:', error);
     res.status(500).json({ 
       success: false, 
-      error: "Internal server error: " + error.message 
+      error: '❌ Test error: ' + error.message 
     });
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Функции очистки данных
-app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
-  try {
-    const { type } = req.body; // 'local', 'firebase', 'all'
-    
-    let result = { success: true, messages: [] };
+// --- ОСНОВНЫЕ МАРШРУТЫ ---
 
-    // Очистка локальных данных
-    if (type === 'local' || type === 'all') {
-      fs.writeFileSync(purchasesFile, "[]", "utf-8");
-      result.messages.push("✅ Local purchases cleared");
-    }
-
-    // Очистка Firebase
-    if (type === 'firebase' || type === 'all') {
-      if (db) {
-        const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.get();
-        
-        const deletePromises = [];
-        snapshot.forEach(doc => {
-          deletePromises.push(doc.ref.delete());
-        });
-        
-        await Promise.all(deletePromises);
-        result.messages.push(`✅ Firebase cleared (${deletePromises.length} documents)`);
-      } else {
-        result.messages.push("❌ Firebase not available");
-      }
-    }
-
-    console.log(`🧹 Data cleared: ${type}`);
-    res.json(result);
-    
-  } catch (error) {
-    console.error('❌ Error clearing data:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to clear data: ' + error.message 
-    });
-  }
-});
-
-app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
-  try {
-    // 🔥 ИЗМЕНЕНО: Очищаем отзывы из Firestore вместо локального файла
-    if (db) {
-      const reviewsRef = db.collection('reviews');
-      const snapshot = await reviewsRef.get();
-      
-      const deletePromises = [];
-      snapshot.forEach(doc => {
-        deletePromises.push(doc.ref.delete());
-      });
-      
-      await Promise.all(deletePromises);
-      console.log(`✅ Firestore reviews cleared (${deletePromises.length} documents)`);
-    }
-    
-    // 🔥 ДОБАВЛЕНО: Также сбрасываем флаги отзывов в Firebase
-    if (db) {
-      const paymentsRef = db.collection('payments');
-      const snapshot = await paymentsRef.get();
-      
-      const updatePromises = [];
-      snapshot.forEach(doc => {
-        updatePromises.push(
-          doc.ref.update({
-            reviewLeft: false,
-            reviewName: null
-          })
-        );
-      });
-      
-      await Promise.all(updatePromises);
-      console.log(`✅ Reset review flags for ${updatePromises.length} payments`);
-    }
-    
-    console.log('🧹 Reviews cleared from Firestore');
-    res.json({ 
-      success: true, 
-      message: "All reviews cleared successfully from Firestore" 
-    });
-  } catch (error) {
-    console.error('❌ Error clearing reviews:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to clear reviews: ' + error.message 
-    });
-  }
-});
-
-// 🔥 ДОБАВЛЕНО: Получить статистику данных
-app.get("/api/stats", authMiddleware, async (req, res) => {
-  try {
-    const stats = {
-      localPurchases: 0,
-      firebasePurchases: 0,
-      reviews: 0,
-      gameStats: {
-        poe2: 0,
-        poe1: 0,
-        unknown: 0
-      }
-    };
-
-    // Локальные покупки
-    try {
-      const localData = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-      stats.localPurchases = localData.length;
-    } catch (e) {
-      stats.localPurchases = 0;
-    }
-
-    // Firebase покупки и статистика по играм
-    if (db) {
-      try {
-        const paymentsRef = db.collection('payments');
-        const snapshot = await paymentsRef.get();
-        stats.firebasePurchases = snapshot.size;
-        
-        // 🔥 ДОБАВЛЕНО: Статистика по играм
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          const gameType = data.gameType || 'unknown';
-          if (stats.gameStats[gameType] !== undefined) {
-            stats.gameStats[gameType]++;
-          } else {
-            stats.gameStats.unknown++;
-          }
-        });
-      } catch (e) {
-        stats.firebasePurchases = 0;
-      }
-    }
-
-    // 🔥 ИЗМЕНЕНО: Отзывы из Firestore
-    if (db) {
-      try {
-        const reviewsRef = db.collection('reviews');
-        const snapshot = await reviewsRef.where('visible', '==', true).get();
-        stats.reviews = snapshot.size;
-      } catch (e) {
-        stats.reviews = 0;
-      }
-    }
-
-    res.json({ success: true, stats });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// 🔥 ДОБАВЛЕНО: Корневой маршрут
 app.get("/", (req, res) => {
   res.json({
     message: "PayPal Server is running!",
@@ -827,14 +675,14 @@ app.get("/", (req, res) => {
       webhookDebug: "/webhook-debug (POST - for testing)",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)"
+      testGoogleSheets: "/api/test-google-sheets (POST)",
+      testSheetsReal: "/api/test-sheets-with-real-data (POST)"
     },
     status: "active",
     timestamp: new Date().toISOString()
   });
 });
 
-// --- Логин админа ---
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USER && password === ADMIN_PASS) {
@@ -851,7 +699,6 @@ app.post("/api/login", (req, res) => {
   });
 });
 
-// 🔧 ДОБАВЛЕНО: Тестовый маршрут для проверки Firebase
 app.get("/api/test-firebase", async (req, res) => {
   try {
     console.log('🧪 Testing Firebase connection...');
@@ -873,7 +720,7 @@ app.get("/api/test-firebase", async (req, res) => {
     console.log('✅ Firebase test document created');
     res.json({ 
       success: true, 
-      message: '✅ Firebase подключен и работает! Проверьте базу данных.' 
+      message: '✅ Firebase подключен и работает!' 
     });
   } catch (error) {
     console.error('❌ Firebase test error:', error);
@@ -884,7 +731,6 @@ app.get("/api/test-firebase", async (req, res) => {
   }
 });
 
-// 🔧 ДОБАВЛЕНО: Тестовый маршрут для создания платежа
 app.post("/api/test-firebase-payment", async (req, res) => {
   try {
     console.log('🧪 Testing Firebase payment creation...');
@@ -924,7 +770,6 @@ app.post("/api/test-firebase-payment", async (req, res) => {
   }
 });
 
-// 🔥 ТЕСТОВЫЙ МАРШРУТ ДЛЯ ПРОВЕРКИ GOOGLE SHEETS
 app.post("/api/test-google-sheets", async (req, res) => {
   try {
     console.log('🧪 Testing Google Sheets integration...');
@@ -969,7 +814,7 @@ app.post("/api/test-google-sheets", async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId + сохранение в Firestore
+// --- СИСТЕМА ОТЗЫВОВ ---
 app.post("/api/reviews", async (req, res) => {
   const { name, review, transactionId } = req.body;
   
@@ -984,7 +829,6 @@ app.post("/api/reviews", async (req, res) => {
     let alreadyReviewed = false;
     let foundTransactionId = null;
 
-    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
     if (db && transactionId) {
       try {
         const paymentsRef = db.collection('payments');
@@ -995,7 +839,6 @@ app.post("/api/reviews", async (req, res) => {
           const paymentData = snapshot.docs[0].data();
           foundTransactionId = paymentData.transactionId;
           
-          // Проверяем, не оставлен ли уже отзыв для этой транзакции
           if (paymentData.reviewLeft) {
             alreadyReviewed = true;
             console.log(`❌ Transaction ${transactionId} already has a review`);
@@ -1008,7 +851,6 @@ app.post("/api/reviews", async (req, res) => {
       }
     }
 
-    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (!hasValidPurchase) {
       console.log(`❌ No valid purchase found for review - rejected`);
       return res.status(403).json({ 
@@ -1016,7 +858,6 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
-    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (alreadyReviewed) {
       console.log(`❌ Review already exists for this purchase - rejected`);
       return res.status(403).json({ 
@@ -1024,7 +865,6 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
-    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ В FIRESTORE
     const reviewData = { 
       name,
       review, 
@@ -1037,7 +877,6 @@ app.post("/api/reviews", async (req, res) => {
       throw new Error('Failed to save review to database');
     }
 
-    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
     if (db && foundTransactionId) {
       try {
         const paymentsRef = db.collection('payments');
@@ -1068,9 +907,7 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore с правильным форматированием дат
 app.get("/api/reviews", async (req, res) => {
-  // 🔥 ДОБАВЛЕНО: Заголовки против кэширования
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -1079,20 +916,17 @@ app.get("/api/reviews", async (req, res) => {
     const result = await getReviewsFromFirestore();
     
     if (result.success) {
-      // 🔥 ИСПРАВЛЕННОЕ ФОРМАТИРОВАНИЕ ДАТЫ
       const formattedReviews = result.reviews.map(review => {
         let date;
         
-        // Обрабатываем Firestore Timestamp
         if (review.createdAt && review.createdAt.toDate) {
-          date = review.createdAt.toDate(); // Конвертируем Firestore Timestamp в Date
+          date = review.createdAt.toDate();
         } else if (review.createdAt) {
-          date = new Date(review.createdAt); // Обычная строка даты
+          date = new Date(review.createdAt);
         } else {
-          date = new Date(); // Fallback
+          date = new Date();
         }
         
-        // Форматируем дату
         const formattedDate = date.toLocaleDateString('ru-RU', {
           year: 'numeric',
           month: 'long', 
@@ -1102,7 +936,7 @@ app.get("/api/reviews", async (req, res) => {
         return {
           name: review.name,
           review: review.review,
-          date: formattedDate // Теперь это строка, а не объект
+          date: formattedDate
         };
       });
       
@@ -1117,22 +951,18 @@ app.get("/api/reviews", async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Удалить отзыв из Firestore
 app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   const reviewId = req.params.id;
   
   try {
-    // 🔥 Удаляем отзыв из Firestore
     const deleteResult = await deleteReviewFromFirestore(reviewId);
     
     if (!deleteResult.success) {
       throw new Error(deleteResult.error);
     }
     
-    // 🔥 Сбрасываем флаг отзыва в Firebase для соответствующей покупки
     if (db) {
       try {
-        // Получаем информацию об отзыве чтобы найти transactionId
         const reviewRef = db.collection('reviews').doc(reviewId);
         const reviewDoc = await reviewRef.get();
         
@@ -1170,7 +1000,7 @@ app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ОТЗЫВОВ: получает данные из Firestore
+// --- АДМИН ПАНЕЛИ ---
 app.get("/admin/reviews", authMiddleware, async (req, res) => {
   try {
     const result = await getReviewsFromFirestore();
@@ -1298,7 +1128,6 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                     if (result.success) {
                         document.getElementById('review-' + reviewId).remove();
                         alert('Review deleted successfully!');
-                        // Перезагружаем страницу чтобы обновить список
                         setTimeout(() => window.location.reload(), 1000);
                     } else {
                         throw new Error(result.error);
@@ -1326,7 +1155,6 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Красивый локальный просмотр покупок
 app.get("/local/payments", (req, res) => {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
@@ -1465,7 +1293,6 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА: Game в начале, Review удалено
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -1479,7 +1306,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
       });
     });
     
-    // 🔥 ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ ФАЙЛ при загрузке админки
     try {
       const localPurchases = payments.map(payment => ({
         ...payment,
@@ -1679,7 +1505,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 </tbody>
             </table>
 
-            <!-- 🔥 ДОБАВЛЕНО: Зона опасности с функциями очистки -->
             <div class="danger-zone">
                 <h3>⚠️ Danger Zone</h3>
                 
@@ -1776,7 +1601,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }, 3000);
             }
 
-            // 🔥 ДОБАВЛЕНО: Функции очистки данных
             async function loadStats() {
                 try {
                     const response = await fetch('/api/stats', {
@@ -1856,7 +1680,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }
             }
 
-            // Загружаем статистику при старте
             loadStats();
         </script>
     </body>
@@ -1872,12 +1695,10 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
   }
 });
 
-// --- Пометить заказ как выданный (обновленная версия) ---
 app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   const { transactionId, paymentId } = req.body;
   
   try {
-    // Обновляем в Firebase
     const paymentRef = db.collection('payments').doc(paymentId);
     await paymentRef.update({
       'delivery.delivered': true,
@@ -1885,7 +1706,6 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       'timestamps.updatedAt': new Date()
     });
     
-    // 🔥 ДОБАВЛЕНО: Также обновляем локальный файл
     try {
       const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
       const localPayment = purchases.find(p => p.firebaseId === paymentId || p.transactionId === transactionId);
@@ -1914,16 +1734,160 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   }
 });
 
-// --- Старт сервера ---
+// --- СТАТИСТИКА И ОЧИСТКА ---
+app.get("/api/stats", authMiddleware, async (req, res) => {
+  try {
+    const stats = {
+      localPurchases: 0,
+      firebasePurchases: 0,
+      reviews: 0,
+      gameStats: {
+        poe2: 0,
+        poe1: 0,
+        unknown: 0
+      }
+    };
+
+    try {
+      const localData = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+      stats.localPurchases = localData.length;
+    } catch (e) {
+      stats.localPurchases = 0;
+    }
+
+    if (db) {
+      try {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.get();
+        stats.firebasePurchases = snapshot.size;
+        
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const gameType = data.gameType || 'unknown';
+          if (stats.gameStats[gameType] !== undefined) {
+            stats.gameStats[gameType]++;
+          } else {
+            stats.gameStats.unknown++;
+          }
+        });
+      } catch (e) {
+        stats.firebasePurchases = 0;
+      }
+    }
+
+    if (db) {
+      try {
+        const reviewsRef = db.collection('reviews');
+        const snapshot = await reviewsRef.where('visible', '==', true).get();
+        stats.reviews = snapshot.size;
+      } catch (e) {
+        stats.reviews = 0;
+      }
+    }
+
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
+  try {
+    const { type } = req.body;
+    
+    let result = { success: true, messages: [] };
+
+    if (type === 'local' || type === 'all') {
+      fs.writeFileSync(purchasesFile, "[]", "utf-8");
+      result.messages.push("✅ Local purchases cleared");
+    }
+
+    if (type === 'firebase' || type === 'all') {
+      if (db) {
+        const paymentsRef = db.collection('payments');
+        const snapshot = await paymentsRef.get();
+        
+        const deletePromises = [];
+        snapshot.forEach(doc => {
+          deletePromises.push(doc.ref.delete());
+        });
+        
+        await Promise.all(deletePromises);
+        result.messages.push(`✅ Firebase cleared (${deletePromises.length} documents)`);
+      } else {
+        result.messages.push("❌ Firebase not available");
+      }
+    }
+
+    console.log(`🧹 Data cleared: ${type}`);
+    res.json(result);
+    
+  } catch (error) {
+    console.error('❌ Error clearing data:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to clear data: ' + error.message 
+    });
+  }
+});
+
+app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
+  try {
+    if (db) {
+      const reviewsRef = db.collection('reviews');
+      const snapshot = await reviewsRef.get();
+      
+      const deletePromises = [];
+      snapshot.forEach(doc => {
+        deletePromises.push(doc.ref.delete());
+      });
+      
+      await Promise.all(deletePromises);
+      console.log(`✅ Firestore reviews cleared (${deletePromises.length} documents)`);
+    }
+    
+    if (db) {
+      const paymentsRef = db.collection('payments');
+      const snapshot = await paymentsRef.get();
+      
+      const updatePromises = [];
+      snapshot.forEach(doc => {
+        updatePromises.push(
+          doc.ref.update({
+            reviewLeft: false,
+            reviewName: null
+          })
+        );
+      });
+      
+      await Promise.all(updatePromises);
+      console.log(`✅ Reset review flags for ${updatePromises.length} payments`);
+    }
+    
+    console.log('🧹 Reviews cleared from Firestore');
+    res.json({ 
+      success: true, 
+      message: "All reviews cleared successfully from Firestore" 
+    });
+  } catch (error) {
+    console.error('❌ Error clearing reviews:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to clear reviews: ' + error.message 
+    });
+  }
+});
+
+// --- СТАРТ СЕРВЕРА ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🎮 Game types support: PoE2, PoE1`);
-  console.log(`📝 Reviews now stored in Firestore collection 'reviews'`);
   console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
   console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
   console.log(`🔧 Test Google Sheets: POST https://paypal-server-46qg.onrender.com/api/test-google-sheets`);
   console.log(`🔧 Webhook Debug: POST https://paypal-server-46qg.onrender.com/webhook-debug`);
+  console.log(`🔧 Test Sheets Real: POST https://paypal-server-46qg.onrender.com/api/test-sheets-with-real-data`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
