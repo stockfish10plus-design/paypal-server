@@ -172,14 +172,14 @@ async function createNowPaymentsPayment(paymentData) {
 
     // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ
     const minAmount = 5.00; // Минимальная сумма $5
-    if (paymentData.amount < minAmount) {
-      throw new Error(`Minimum payment amount is $${minAmount}. Your amount: $${paymentData.amount}`);
+    if (paymentData.price_amount < minAmount) {
+      throw new Error(`Minimum payment amount is $${minAmount}. Your amount: $${paymentData.price_amount}`);
     }
 
     const orderData = {
-      price_amount: paymentData.amount,
+      price_amount: paymentData.price_amount,
       price_currency: 'usd',
-      pay_currency: null, // 🔥 УБИРАЕМ фиксированную валюту, пусть пользователь выбирает
+      pay_currency: paymentData.pay_currency,
       order_id: paymentData.order_id,
       order_description: paymentData.order_description,
       ipn_callback_url: 'https://paypal-server-46qg.onrender.com/webhook/nowpayments',
@@ -406,54 +406,79 @@ async function savePaymentToFirebase(paymentData) {
   }
 }
 
-// 🔥 ОБНОВЛЕННЫЙ API: Для создания платежа NowPayments
+// 🔥 ИСПРАВЛЕННЫЙ API: Для создания платежа NowPayments
 app.post("/api/create-crypto-payment", async (req, res) => {
   try {
-    const { amount, nickname, gameType, items, success_url, cancel_url } = req.body;
+    console.log('📥 Received crypto payment request:', JSON.stringify(req.body, null, 2));
     
-    if (!amount || !nickname || !gameType) {
+    // 🔥 ИСПРАВЛЕНИЕ: Принимаем как новые поля, так и старые для обратной совместимости
+    const {
+      amount,           // Новое поле
+      nickname,         // Новое поле  
+      gameType,         // Новое поле
+      items,            // Новое поле
+      success_url,      // Новое поле
+      cancel_url,       // Новое поле
+      
+      // Старые поля для обратной совместимости
+      price_amount,
+      pay_currency,
+      order_id,
+      order_description
+    } = req.body;
+    
+    // 🔥 ИСПРАВЛЕНИЕ: Используем новые поля или старые как fallback
+    const finalAmount = amount || price_amount;
+    const finalNickname = nickname || 'Crypto Buyer';
+    const finalGameType = gameType || 'unknown';
+    const finalItems = items || [];
+    const finalPayCurrency = pay_currency || 'btc'; // fallback
+    const finalOrderId = order_id || `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const finalOrderDescription = order_description || `PoE Currency - ${finalNickname} (${finalGameType})`;
+    
+    if (!finalAmount || !finalNickname || !finalGameType) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: amount, nickname, gameType'
+        error: 'Missing required fields: amount, nickname, gameType',
+        received: req.body
       });
     }
 
     // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ НА СЕРВЕРЕ
     const minAmount = 5.00;
-    if (parseFloat(amount) < minAmount) {
+    if (parseFloat(finalAmount) < minAmount) {
       return res.status(400).json({
         success: false,
-        error: `Minimum crypto payment is $${minAmount}. Your amount: $${amount}`
+        error: `Minimum crypto payment is $${minAmount}. Your amount: $${finalAmount}`
       });
     }
 
-    const order_id = `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    const paymentData = {
-      amount: parseFloat(amount),
-      pay_currency: null, // 🔥 Теперь пользователь выбирает валюту
-      order_id: order_id,
-      order_description: `PoE Currency - ${nickname} (${gameType})`,
+    // 🔥 ИСПРАВЛЕНИЕ: Создаем данные для NowPayments API
+    const nowPaymentsData = {
+      price_amount: parseFloat(finalAmount),
+      price_currency: 'usd',
+      pay_currency: finalPayCurrency,
+      order_id: finalOrderId,
+      order_description: finalOrderDescription,
+      ipn_callback_url: 'https://paypal-server-46qg.onrender.com/webhook/nowpayments',
       success_url: success_url || 'https://poestock.net',
-      cancel_url: cancel_url || 'https://poestock.net',
-      nickname: nickname,
-      gameType: gameType,
-      items: items || []
+      cancel_url: cancel_url || 'https://poestock.net'
     };
 
-    console.log('💰 Creating NowPayments payment for:', nickname, 'Amount:', amount);
+    console.log('💰 Creating NowPayments payment with data:', JSON.stringify(nowPaymentsData, null, 2));
     
-    const nowpaymentsResult = await createNowPaymentsPayment(paymentData);
+    const nowpaymentsResult = await createNowPaymentsPayment(nowPaymentsData);
     
     if (nowpaymentsResult.success) {
+      // Сохраняем информацию о платеже в Firebase
       const pendingPayment = {
-        transactionId: order_id,
+        transactionId: finalOrderId,
         paymentId: nowpaymentsResult.data.payment_id,
         status: 'pending',
-        nickname: nickname,
-        amount: amount,
-        items: items,
-        gameType: gameType,
+        nickname: finalNickname,
+        amount: finalAmount,
+        items: finalItems,
+        gameType: finalGameType,
         paymentMethod: 'crypto',
         payerEmail: 'crypto@payment.com'
       };
@@ -464,7 +489,7 @@ app.post("/api/create-crypto-payment", async (req, res) => {
         success: true,
         payment_url: nowpaymentsResult.payment_url,
         payment_id: nowpaymentsResult.data.payment_id,
-        order_id: order_id
+        order_id: finalOrderId
       });
     } else {
       res.status(500).json({
