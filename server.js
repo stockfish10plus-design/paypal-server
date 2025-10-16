@@ -18,10 +18,10 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-// 🔥 ДОБАВЛЕНО: Конфигурация двух ботов
+// 🔥 ИСПРАВЛЕНО: Используем TELEGRAM_CHAT_ID вместо ADMIN_CHAT_ID
 const PAYPAL_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Твой текущий бот для платежей
 const SUPPORT_BOT_TOKEN = process.env.SUPPORT_BOT_TOKEN; // Новый бот для пересылки сообщений
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // Твой ID для получения сообщений
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // Используем существующую переменную
 
 const TELEGRAM_API_PAYPAL = `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}`;
 const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
@@ -39,8 +39,8 @@ app.get("/api/check-support-config", (req, res) => {
   const config = {
     SUPPORT_BOT_TOKEN: SUPPORT_BOT_TOKEN ? 
       `✅ SET (${SUPPORT_BOT_TOKEN.substring(0, 10)}...)` : '❌ NOT SET',
-    ADMIN_CHAT_ID: ADMIN_CHAT_ID ? 
-      `✅ SET (${ADMIN_CHAT_ID})` : '❌ NOT SET',
+    TELEGRAM_CHAT_ID: TELEGRAM_CHAT_ID ? 
+      `✅ SET (${TELEGRAM_CHAT_ID})` : '❌ NOT SET',
     PAYPAL_BOT_TOKEN: PAYPAL_BOT_TOKEN ? 
       '✅ SET' : '❌ NOT SET',
     serverUrl: `https://${req.get('host')}`,
@@ -58,14 +58,14 @@ app.get("/api/test-support-bot-message", async (req, res) => {
     if (!SUPPORT_BOT_TOKEN) {
       return res.json({ success: false, error: "SUPPORT_BOT_TOKEN not set" });
     }
-    if (!ADMIN_CHAT_ID) {
-      return res.json({ success: false, error: "ADMIN_CHAT_ID not set" });
+    if (!TELEGRAM_CHAT_ID) {
+      return res.json({ success: false, error: "TELEGRAM_CHAT_ID not set" });
     }
 
     console.log('🧪 Testing support bot message sending...');
     
     const testMessage = {
-      chat_id: ADMIN_CHAT_ID,
+      chat_id: TELEGRAM_CHAT_ID,
       text: '🧪 <b>Тестовое сообщение от Support Bot</b>\n\nЕсли ты видишь это, значит бот может отправлять тебе сообщения! ✅',
       parse_mode: 'HTML'
     };
@@ -96,7 +96,7 @@ app.get("/api/test-support-bot-message", async (req, res) => {
 app.get("/api/debug-support", (req, res) => {
   res.json({
     supportBotToken: SUPPORT_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
-    adminChatId: ADMIN_CHAT_ID ? "✅ SET: " + ADMIN_CHAT_ID : "❌ MISSING",
+    telegramChatId: TELEGRAM_CHAT_ID ? "✅ SET: " + TELEGRAM_CHAT_ID : "❌ MISSING",
     paypalBotToken: PAYPAL_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
     webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
     userMessageMapSize: Object.keys(userMessageMap).length,
@@ -125,8 +125,8 @@ app.post("/webhook-support", async (req, res) => {
     return;
   }
 
-  if (!ADMIN_CHAT_ID) {
-    console.error('❌ ADMIN_CHAT_ID not configured!');
+  if (!TELEGRAM_CHAT_ID) {
+    console.error('❌ TELEGRAM_CHAT_ID not configured!');
     return;
   }
 
@@ -138,14 +138,14 @@ app.post("/webhook-support", async (req, res) => {
     const userId = update.message.from.id;
     
     console.log(`💬 New message from ${userName} (ID: ${userId}): "${text}"`);
-    console.log(`📞 Chat ID: ${chatId}, Admin Chat ID: ${ADMIN_CHAT_ID}`);
+    console.log(`📞 Chat ID: ${chatId}, Telegram Chat ID: ${TELEGRAM_CHAT_ID}`);
     
     try {
       // Пересылаем сообщение админу
-      console.log(`📤 Forwarding to admin ${ADMIN_CHAT_ID}...`);
+      console.log(`📤 Forwarding to admin ${TELEGRAM_CHAT_ID}...`);
       
       const sentMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: ADMIN_CHAT_ID,
+        chat_id: TELEGRAM_CHAT_ID,
         text: `👤 <b>Сообщение от ${userName}:</b>\n${text}`,
         parse_mode: 'HTML'
       });
@@ -169,7 +169,7 @@ app.post("/webhook-support", async (req, res) => {
   }
   
   // Обработка ответов админа (реплая)
-  if (update.message && update.message.reply_to_message && update.message.chat.id.toString() === ADMIN_CHAT_ID.toString()) {
+  if (update.message && update.message.reply_to_message && update.message.chat.id.toString() === TELEGRAM_CHAT_ID.toString()) {
     const adminReplyText = update.message.text;
     const repliedMessageId = update.message.reply_to_message.message_id;
     
@@ -191,7 +191,7 @@ app.post("/webhook-support", async (req, res) => {
         
         // Подтверждаем админу
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-          chat_id: ADMIN_CHAT_ID,
+          chat_id: TELEGRAM_CHAT_ID,
           text: '✅ <b>Ответ отправлен пользователю!</b>',
           parse_mode: 'HTML',
           reply_to_message_id: update.message.message_id
@@ -203,7 +203,7 @@ app.post("/webhook-support", async (req, res) => {
         
         // Если не удалось отправить (пользователь заблокировал бота и т.д.)
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-          chat_id: ADMIN_CHAT_ID,
+          chat_id: TELEGRAM_CHAT_ID,
           text: '❌ <b>Не удалось отправить ответ пользователю.</b>\nВозможно, пользователь заблокировал бота.',
           parse_mode: 'HTML'
         });
@@ -906,14 +906,14 @@ app.post("/webhook", async (req, res) => {
   }
 
   // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
-  if (PAYPAL_BOT_TOKEN && ADMIN_CHAT_ID) {
+  if (PAYPAL_BOT_TOKEN && TELEGRAM_CHAT_ID) {
     try {
       const itemsText = details.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
       
       await axios.post(
         `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}/sendMessage`,
         {
-          chat_id: ADMIN_CHAT_ID,
+          chat_id: TELEGRAM_CHAT_ID,
           text: `💰 New purchase (${gameType}):
 Transaction: ${details.transactionId}
 Buyer: ${nickname}
