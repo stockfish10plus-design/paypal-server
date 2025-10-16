@@ -193,11 +193,10 @@ async function createNowPaymentsPayment(paymentData) {
 
     console.log('✅ NowPayments payment created:', response.data);
     
-    // 🔥 ИСПРАВЛЕНИЕ: Возвращаем payment_url
     return { 
       success: true, 
       data: response.data,
-      payment_url: `https://nowpayments.io/payment/?iid=${response.data.payment_id}`
+      payment_url: response.data.invoice_url || `https://nowpayments.io/payment/?iid=${response.data.payment_id}`
     };
     
   } catch (error) {
@@ -413,7 +412,7 @@ app.post("/api/create-crypto-payment", async (req, res) => {
       });
     }
 
-    const order_id = `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${nickname}_${gameType}`;
+    const order_id = `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const paymentData = {
       amount: parseFloat(amount),
@@ -446,10 +445,9 @@ app.post("/api/create-crypto-payment", async (req, res) => {
       
       await savePaymentToFirebase(pendingPayment);
       
-      // 🔥 ВОЗВРАЩАЕМ payment_url фронтенду
       res.json({
         success: true,
-        payment_url: nowpaymentsResult.payment_url, // 🔥 ЭТО ОБЯЗАТЕЛЬНО
+        payment_url: nowpaymentsResult.payment_url,
         payment_id: nowpaymentsResult.data.payment_id,
         order_id: order_id
       });
@@ -510,7 +508,6 @@ app.post("/webhook/nowpayments", async (req, res) => {
       
       // Извлекаем данные из order_id
       const orderId = paymentData.order_id || '';
-      const { nickname, gameType } = extractFromOrderId(orderId);
       
       const processedData = {
         amount: paymentData.price_amount,
@@ -518,10 +515,10 @@ app.post("/webhook/nowpayments", async (req, res) => {
         payerEmail: paymentData.payer_email || 'crypto@payment.com',
         paymentId: paymentData.payment_id,
         status: 'completed',
-        nickname: nickname,
+        nickname: 'Crypto Buyer',
         items: [], // NowPayments не передает детали корзины
         transactionId: paymentData.payment_id,
-        gameType: gameType,
+        gameType: 'unknown',
         paymentMethod: 'crypto'
       };
       
@@ -558,11 +555,9 @@ app.post("/webhook/nowpayments", async (req, res) => {
             `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
             {
               chat_id: TELEGRAM_CHAT_ID,
-              text: `💰 New Crypto Payment (${gameType}):
+              text: `💰 New Crypto Payment:
 Transaction: ${paymentData.payment_id}
-Buyer: ${nickname}
 Amount: $${paymentData.price_amount} ${paymentData.pay_currency}
-Game: ${gameType}
 Payment Method: NowPayments`
             }
           );
@@ -582,28 +577,6 @@ Payment Method: NowPayments`
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
-// 🔥 ДОБАВЛЕНО: Функция для извлечения данных из orderId
-function extractFromOrderId(orderId) {
-  const parts = orderId.split('_');
-  
-  let nickname = 'Unknown';
-  let gameType = 'unknown';
-  
-  if (parts.length > 3) {
-    nickname = parts[3] || 'Unknown';
-  }
-  
-  if (parts.length > 4) {
-    gameType = parts[4] || 'unknown';
-  }
-  
-  if (gameType !== 'poe1' && gameType !== 'poe2') {
-    gameType = 'unknown';
-  }
-  
-  return { nickname, gameType };
-}
 
 // 🔥 ОБНОВЛЕННЫЙ WEBHOOK ДЛЯ PAYPAL
 app.post("/webhook", async (req, res) => {
