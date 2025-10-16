@@ -18,8 +18,237 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
+// 🔥 ДОБАВЛЕНО: Конфигурация двух ботов
+const PAYPAL_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Твой текущий бот для платежей
+const SUPPORT_BOT_TOKEN = process.env.SUPPORT_BOT_TOKEN; // Новый бот для пересылки сообщений
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // Твой ID для получения сообщений
+
+const TELEGRAM_API_PAYPAL = `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}`;
+const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
+
 app.use(bodyParser.json());
 app.use(cors());
+
+// 🔥 ДОБАВЛЕНО: Хранилище для связи сообщений поддержки
+let userMessageMap = {};
+
+// 🔥 ДОБАВЛЕНО: ВЕБХУК ДЛЯ ВТОРОГО БОТА (ПОДДЕРЖКА)
+app.post("/webhook-support", async (req, res) => {
+  console.log('💬 Support bot update received');
+  
+  const update = req.body;
+  
+  // Важно сразу ответить Telegram
+  res.send('OK');
+
+  // Обработка сообщений от пользователей поддержке
+  if (update.message && !update.message.reply_to_message) {
+    const chatId = update.message.chat.id;
+    const text = update.message.text || '(медиа-сообщение)';
+    const userName = update.message.from.first_name || 'Неизвестный';
+    const userId = update.message.from.id;
+    
+    console.log(`💬 New message from ${userName} (${userId}): ${text}`);
+    
+    try {
+      // Пересылаем сообщение админу
+      const sentMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: ADMIN_CHAT_ID,
+        text: `👤 <b>Сообщение от ${userName}:</b>\n${text}`,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[
+            { 
+              text: '💬 Ответить', 
+              url: `https://t.me/${(await getBotUsername(SUPPORT_BOT_TOKEN))}?start=reply_${userId}` 
+            }
+          ]]
+        }
+      });
+      
+      // Сохраняем связь для ответов
+      userMessageMap[sentMessage.data.result.message_id] = {
+        userChatId: chatId,
+        userId: userId,
+        userName: userName
+      };
+      
+      console.log(`✅ Message forwarded to admin, saved mapping for message_id: ${sentMessage.data.result.message_id}`);
+    } catch (error) {
+      console.error('❌ Error forwarding message to admin:', error.response?.data || error.message);
+    }
+  }
+  
+  // Обработка ответов админа (реплая)
+  if (update.message && update.message.reply_to_message && update.message.chat.id.toString() === ADMIN_CHAT_ID.toString()) {
+    const adminReplyText = update.message.text;
+    const repliedMessageId = update.message.reply_to_message.message_id;
+    
+    // Находим данные пользователя по message_id реплая
+    const userData = userMessageMap[repliedMessageId];
+    
+    if (userData && adminReplyText) {
+      try {
+        // Отправляем ответ пользователю
+        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: userData.userChatId,
+          text: `💬 <b>Ответ от поддержки:</b>\n${adminReplyText}`,
+          parse_mode: 'HTML'
+        });
+        
+        // Подтверждаем админу
+        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: ADMIN_CHAT_ID,
+          text: '✅ <b>Ответ отправлен пользователю!</b>',
+          parse_mode: 'HTML',
+          reply_to_message_id: update.message.message_id
+        });
+        
+        console.log(`✅ Reply sent to user ${userData.userName} (${userData.userId})`);
+      } catch (error) {
+        console.error('❌ Error sending reply to user:', error.response?.data || error.message);
+        
+        // Если не удалось отправить (пользователь заблокировал бота и т.д.)
+        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: ADMIN_CHAT_ID,
+          text: '❌ <b>Не удалось отправить ответ пользователю.</b>\nВозможно, пользователь заблокировал бота.',
+          parse_mode: 'HTML'
+        });
+      }
+    }
+  }
+
+  // Обработка команд боту поддержки
+  if (update.message && update.message.text && update.message.text.startsWith('/')) {
+    await handleSupportBotCommand(update.message);
+  }
+});
+
+// 🔥 ДОБАВЛЕНО: Функция для получения username бота
+async function getBotUsername(botToken) {
+  try {
+    const response = await axios.get(`https://api.telegram.org/bot${botToken}/getMe`);
+    return response.data.result.username;
+  } catch (error) {
+    console.error('Error getting bot username:', error);
+    return 'support_bot';
+  }
+}
+
+// 🔥 ДОБАВЛЕНО: Обработка команд для бота поддержки
+async function handleSupportBotCommand(message) {
+  const chatId = message.chat.id;
+  const text = message.text;
+  
+  try {
+    if (text === '/start') {
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: `👋 <b>Добро пожаловать в поддержку!</b>\n\nПросто напишите ваш вопрос, и я перешлю его администратору. Он ответит вам здесь же.`,
+        parse_mode: 'HTML'
+      });
+    } else if (text === '/help') {
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: `ℹ️ <b>Помощь</b>\n\n• Просто напишите ваш вопрос - я перешлю его администратору\n• Администратор ответит вам в этом чате\n• Для связи по платежам укажите ваш transaction ID`,
+        parse_mode: 'HTML'
+      });
+    }
+  } catch (error) {
+    console.error('Error handling support bot command:', error);
+  }
+}
+
+// 🔥 ДОБАВЛЕНО: Тестовый маршрут для поддержки
+app.get("/api/test-support-bot", async (req, res) => {
+  try {
+    if (!SUPPORT_BOT_TOKEN) {
+      return res.json({ 
+        success: false, 
+        message: '❌ SUPPORT_BOT_TOKEN not configured' 
+      });
+    }
+    
+    // Проверяем, что бот работает
+    const botInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
+    
+    // Проверяем вебхук
+    const webhookInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getWebhookInfo`);
+    
+    res.json({
+      success: true,
+      bot: botInfo.data.result,
+      webhook: webhookInfo.data.result,
+      message: '✅ Support bot is configured correctly'
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.response?.data || error.message,
+      message: '❌ Support bot configuration error'
+    });
+  }
+});
+
+// 🔥 ДОБАВЛЕНО: Установка вебхука для бота поддержки
+app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
+  try {
+    if (!SUPPORT_BOT_TOKEN) {
+      return res.status(400).json({
+        success: false,
+        error: 'SUPPORT_BOT_TOKEN not configured in environment variables'
+      });
+    }
+    
+    const webhookUrl = `https://${req.get('host')}/webhook-support`;
+    
+    const response = await axios.get(
+      `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
+    );
+    
+    console.log('✅ Support bot webhook setup response:', response.data);
+    
+    res.json({
+      success: true,
+      webhookUrl: webhookUrl,
+      telegramResponse: response.data
+    });
+  } catch (error) {
+    console.error('❌ Error setting up support webhook:', error);
+    res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message
+    });
+  }
+});
+
+// 🔥 ОБНОВЛЕННЫЙ корневой маршрут с информацией о двух ботах
+app.get("/", (req, res) => {
+  res.json({
+    message: "PayPal Server is running!",
+    bots: {
+      paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
+      supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
+    },
+    endpoints: {
+      test: "/api/test-firebase",
+      testSupportBot: "/api/test-support-bot",
+      setupSupportWebhook: "/api/setup-support-webhook (POST, requires auth)",
+      adminPayments: "/admin/payments (requires login)",
+      adminReviews: "/admin/reviews (requires login)", 
+      localPayments: "/local/payments (backup view)",
+      webhook: "/webhook (for PayPal bot)",
+      webhookSupport: "/webhook-support (for Support bot)",
+      login: "/api/login",
+      testPayment: "/api/test-firebase-payment (POST)",
+      testGoogleSheets: "/api/test-google-sheets (POST)"
+    },
+    status: "active",
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ========== ТВОЙ СУЩЕСТВУЮЩИЙ КОД НИЖЕ (без изменений) ==========
 
 // 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
 async function saveReviewToFirestore(reviewData) {
@@ -497,25 +726,6 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Корневой маршрут
-app.get("/", (req, res) => {
-  res.json({
-    message: "PayPal Server is running!",
-    endpoints: {
-      test: "/api/test-firebase",
-      adminPayments: "/admin/payments (requires login)",
-      adminReviews: "/admin/reviews (requires login)", 
-      localPayments: "/local/payments (backup view)",
-      webhook: "/webhook",
-      login: "/api/login",
-      testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)"
-    },
-    status: "active",
-    timestamp: new Date().toISOString()
-  });
-});
-
 // --- Логин админа ---
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
@@ -594,17 +804,14 @@ app.post("/webhook", async (req, res) => {
   }
 
   // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
-  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+  if (PAYPAL_BOT_TOKEN && ADMIN_CHAT_ID) {
     try {
       const itemsText = details.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
       
       await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}/sendMessage`,
         {
-          chat_id: TELEGRAM_CHAT_ID,
+          chat_id: ADMIN_CHAT_ID,
           text: `💰 New purchase (${gameType}):
 Transaction: ${details.transactionId}
 Buyer: ${nickname}
@@ -1236,7 +1443,7 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА: Game в начале, Review удалено
+// 🔥 ОБНОВЛЕННАЯ АДМИНКА: добавляем панель бота поддержки
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -1250,16 +1457,20 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
       });
     });
     
-    // 🔥 ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ ФАЙЛ при загрузке админки
-    try {
-      const localPurchases = payments.map(payment => ({
-        ...payment,
-        firebaseId: payment.id
-      }));
-      fs.writeFileSync(purchasesFile, JSON.stringify(localPurchases, null, 2));
-      console.log('✅ Local backup updated from Firebase');
-    } catch (localError) {
-      console.error('❌ Error updating local backup:', localError);
+    // 🔥 ДОБАВЛЕНО: Информация о боте поддержки
+    let supportBotStatus = '❌ Not configured';
+    let supportBotLink = '#';
+    let supportBotUsername = 'support_bot';
+    
+    if (SUPPORT_BOT_TOKEN) {
+      try {
+        const botInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
+        supportBotStatus = `✅ @${botInfo.data.result.username}`;
+        supportBotLink = `https://t.me/${botInfo.data.result.username}`;
+        supportBotUsername = botInfo.data.result.username;
+      } catch (error) {
+        supportBotStatus = '❌ Error getting bot info';
+      }
     }
     
     const html = `
@@ -1343,6 +1554,38 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             .poe2 { background: #0070ba; color: white; }
             .poe1 { background: #28a745; color: white; }
             .unknown { background: #6c757d; color: white; }
+            
+            /* 🔥 ДОБАВЛЕНО: Стили для бота поддержки */
+            .support-panel {
+                background: #e8f5e8;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                border-left: 4px solid #28a745;
+            }
+            .support-panel h3 {
+                margin-top: 0;
+                color: #155724;
+            }
+            .bot-status {
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-right: 10px;
+            }
+            .status-active { background: #d4edda; color: #155724; }
+            .status-inactive { background: #f8d7da; color: #721c24; }
+            .support-btn {
+                background: #28a745;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                border-radius: 3px;
+                cursor: pointer;
+                margin-right: 5px;
+            }
+            .support-btn:hover { background: #218838; }
         </style>
     </head>
     <body>
@@ -1351,6 +1594,22 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 <a href="/admin/payments?token=${req.query.token}" class="active">💳 Payments</a>
                 <a href="/admin/reviews?token=${req.query.token}">⭐ Reviews</a>
                 <a href="/local/payments" class="backup-link">📁 Local Backup</a>
+            </div>
+            
+            <!-- 🔥 ДОБАВЛЕНО: Панель бота поддержки -->
+            <div class="support-panel">
+                <h3>🤖 Support Bot</h3>
+                <p>
+                    <span class="bot-status ${SUPPORT_BOT_TOKEN ? 'status-active' : 'status-inactive'}">
+                        ${supportBotStatus}
+                    </span>
+                    ${SUPPORT_BOT_TOKEN ? 
+                      `<a href="${supportBotLink}" target="_blank" class="support-btn">Open Bot</a> 
+                       <a href="/api/test-support-bot" target="_blank" class="support-btn">Test Bot</a> 
+                       <button onclick="setupSupportWebhook()" class="support-btn">Setup Webhook</button>` 
+                      : 'Add SUPPORT_BOT_TOKEN to environment variables'}
+                </p>
+                <p><small>Users can write to the support bot, and messages will be forwarded to you. Reply to forwarded messages to answer users.</small></p>
             </div>
             
             <div class="header">
@@ -1379,7 +1638,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             <table>
                 <thead>
                     <tr>
-                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <th>Game</th>
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
@@ -1410,7 +1669,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
-                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
+                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td>
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1627,6 +1886,28 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }
             }
 
+            // 🔥 ДОБАВЛЕНО: Функция для настройки вебхука поддержки
+            async function setupSupportWebhook() {
+                try {
+                    const response = await fetch('/api/setup-support-webhook', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification('✅ Support bot webhook setup successfully!', 'success');
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    showNotification('❌ Error: ' + error.message, 'error');
+                }
+            }
+
             // Загружаем статистику при старте
             loadStats();
         </script>
@@ -1688,14 +1969,20 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 // --- Старт сервера ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
+  console.log(`🤖 Bots configured:`);
+  console.log(`   💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
+  console.log(`   💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
   console.log(`🎮 Game types support: PoE2, PoE1`);
-  console.log(`📝 Reviews now stored in Firestore collection 'reviews'`);
-  console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
-  console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
-  console.log(`🔧 Test Google Sheets: POST https://paypal-server-46qg.onrender.com/api/test-google-sheets`);
-  console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
-  console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
-  console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
-  console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
+  console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
+  
+  console.log(`\n🔧 Test Endpoints:`);
+  console.log(`   🔧 Test PayPal Bot: https://paypal-server-46qg.onrender.com/api/test-firebase`);
+  console.log(`   🔧 Test Support Bot: https://paypal-server-46qg.onrender.com/api/test-support-bot`);
+  console.log(`   👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments`);
+  console.log(`   📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
+  
+  console.log(`\n🌐 Webhooks:`);
+  console.log(`   💳 PayPal Webhook: https://paypal-server-46qg.onrender.com/webhook`);
+  console.log(`   💬 Support Webhook: https://paypal-server-46qg.onrender.com/webhook-support`);
 });
