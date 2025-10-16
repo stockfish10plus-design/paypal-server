@@ -185,14 +185,14 @@ app.post("/webhook-support", async (req, res) => {
         // Отправляем ответ пользователю
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: userData.userChatId,
-          text: `💬 <b>Ответ от поддержки:</b>\n${adminReplyText}`,
+          text: `💬 <b>Support response:</b>\n${adminReplyText}`,
           parse_mode: 'HTML'
         });
         
         // Подтверждаем админу
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
-          text: '✅ <b>Ответ отправлен пользователю!</b>',
+          text: '✅ <b>Reply sent to user!</b>',
           parse_mode: 'HTML',
           reply_to_message_id: update.message.message_id
         });
@@ -204,7 +204,7 @@ app.post("/webhook-support", async (req, res) => {
         // Если не удалось отправить (пользователь заблокировал бота и т.д.)
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
-          text: '❌ <b>Не удалось отправить ответ пользователю.</b>\nВозможно, пользователь заблокировал бота.',
+          text: '❌ <b>Failed to send reply to user.</b>\nMaybe user blocked the bot.',
           parse_mode: 'HTML'
         });
       }
