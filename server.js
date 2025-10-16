@@ -32,14 +32,103 @@ app.use(cors());
 // 🔥 ДОБАВЛЕНО: Хранилище для связи сообщений поддержки
 let userMessageMap = {};
 
+// ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
+
+// 🔧 ДИАГНОСТИКА: Проверка конфигурации поддержки
+app.get("/api/check-support-config", (req, res) => {
+  const config = {
+    SUPPORT_BOT_TOKEN: SUPPORT_BOT_TOKEN ? 
+      `✅ SET (${SUPPORT_BOT_TOKEN.substring(0, 10)}...)` : '❌ NOT SET',
+    ADMIN_CHAT_ID: ADMIN_CHAT_ID ? 
+      `✅ SET (${ADMIN_CHAT_ID})` : '❌ NOT SET',
+    PAYPAL_BOT_TOKEN: PAYPAL_BOT_TOKEN ? 
+      '✅ SET' : '❌ NOT SET',
+    serverUrl: `https://${req.get('host')}`,
+    webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
+    userMessageMapSize: Object.keys(userMessageMap).length
+  };
+  
+  console.log('🔧 Support Bot Configuration Check:', config);
+  res.json(config);
+});
+
+// 🔧 ДИАГНОСТИКА: Тест отправки сообщения от бота поддержки
+app.get("/api/test-support-bot-message", async (req, res) => {
+  try {
+    if (!SUPPORT_BOT_TOKEN) {
+      return res.json({ success: false, error: "SUPPORT_BOT_TOKEN not set" });
+    }
+    if (!ADMIN_CHAT_ID) {
+      return res.json({ success: false, error: "ADMIN_CHAT_ID not set" });
+    }
+
+    console.log('🧪 Testing support bot message sending...');
+    
+    const testMessage = {
+      chat_id: ADMIN_CHAT_ID,
+      text: '🧪 <b>Тестовое сообщение от Support Bot</b>\n\nЕсли ты видишь это, значит бот может отправлять тебе сообщения! ✅',
+      parse_mode: 'HTML'
+    };
+
+    const response = await axios.post(
+      `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/sendMessage`,
+      testMessage
+    );
+
+    console.log('✅ Test message sent successfully:', response.data);
+    
+    res.json({
+      success: true,
+      message: 'Test message sent to you successfully!',
+      telegramResponse: response.data
+    });
+
+  } catch (error) {
+    console.error('❌ Test message failed:', error.response?.data || error.message);
+    res.json({
+      success: false,
+      error: error.response?.data || error.message
+    });
+  }
+});
+
+// 🔧 ДИАГНОСТИКА: Полная информация о сервере
+app.get("/api/debug-support", (req, res) => {
+  res.json({
+    supportBotToken: SUPPORT_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
+    adminChatId: ADMIN_CHAT_ID ? "✅ SET: " + ADMIN_CHAT_ID : "❌ MISSING",
+    paypalBotToken: PAYPAL_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
+    webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
+    userMessageMapSize: Object.keys(userMessageMap).length,
+    environment: {
+      NODE_ENV: process.env.NODE_ENV || 'not set',
+      RENDER: process.env.RENDER ? '✅' : '❌'
+    }
+  });
+});
+
+// ==================== ВЕБХУК ПОДДЕРЖКИ ====================
+
 // 🔥 ДОБАВЛЕНО: ВЕБХУК ДЛЯ ВТОРОГО БОТА (ПОДДЕРЖКА)
 app.post("/webhook-support", async (req, res) => {
-  console.log('💬 Support bot update received');
+  console.log('💬 ===== SUPPORT BOT WEBHOOK CALLED =====');
+  console.log('📦 Headers:', req.headers);
+  console.log('📨 Body:', JSON.stringify(req.body, null, 2));
   
   const update = req.body;
   
   // Важно сразу ответить Telegram
   res.send('OK');
+
+  if (!SUPPORT_BOT_TOKEN) {
+    console.error('❌ SUPPORT_BOT_TOKEN not configured!');
+    return;
+  }
+
+  if (!ADMIN_CHAT_ID) {
+    console.error('❌ ADMIN_CHAT_ID not configured!');
+    return;
+  }
 
   // Обработка сообщений от пользователей поддержке
   if (update.message && !update.message.reply_to_message) {
@@ -48,23 +137,20 @@ app.post("/webhook-support", async (req, res) => {
     const userName = update.message.from.first_name || 'Неизвестный';
     const userId = update.message.from.id;
     
-    console.log(`💬 New message from ${userName} (${userId}): ${text}`);
+    console.log(`💬 New message from ${userName} (ID: ${userId}): "${text}"`);
+    console.log(`📞 Chat ID: ${chatId}, Admin Chat ID: ${ADMIN_CHAT_ID}`);
     
     try {
       // Пересылаем сообщение админу
+      console.log(`📤 Forwarding to admin ${ADMIN_CHAT_ID}...`);
+      
       const sentMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: ADMIN_CHAT_ID,
         text: `👤 <b>Сообщение от ${userName}:</b>\n${text}`,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [[
-            { 
-              text: '💬 Ответить', 
-              url: `https://t.me/${(await getBotUsername(SUPPORT_BOT_TOKEN))}?start=reply_${userId}` 
-            }
-          ]]
-        }
+        parse_mode: 'HTML'
       });
+      
+      console.log('✅ Message sent to admin, response:', sentMessage.data);
       
       // Сохраняем связь для ответов
       userMessageMap[sentMessage.data.result.message_id] = {
@@ -73,9 +159,12 @@ app.post("/webhook-support", async (req, res) => {
         userName: userName
       };
       
-      console.log(`✅ Message forwarded to admin, saved mapping for message_id: ${sentMessage.data.result.message_id}`);
+      console.log(`💾 Saved mapping: message_id ${sentMessage.data.result.message_id} -> user ${userName}`);
+      
     } catch (error) {
-      console.error('❌ Error forwarding message to admin:', error.response?.data || error.message);
+      console.error('❌ Error forwarding message to admin:');
+      console.error('🔧 Error details:', error.response?.data || error.message);
+      console.error('🔧 Request config:', error.config);
     }
   }
   
@@ -84,10 +173,14 @@ app.post("/webhook-support", async (req, res) => {
     const adminReplyText = update.message.text;
     const repliedMessageId = update.message.reply_to_message.message_id;
     
+    console.log(`🔁 Admin reply detected: "${adminReplyText}" to message ${repliedMessageId}`);
+    
     // Находим данные пользователя по message_id реплая
     const userData = userMessageMap[repliedMessageId];
     
     if (userData && adminReplyText) {
+      console.log(`📨 Sending reply to user ${userData.userName} (${userData.userId})`);
+      
       try {
         // Отправляем ответ пользователю
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
@@ -115,6 +208,8 @@ app.post("/webhook-support", async (req, res) => {
           parse_mode: 'HTML'
         });
       }
+    } else {
+      console.log('❌ No user data found for reply or no reply text');
     }
   }
 
@@ -122,6 +217,8 @@ app.post("/webhook-support", async (req, res) => {
   if (update.message && update.message.text && update.message.text.startsWith('/')) {
     await handleSupportBotCommand(update.message);
   }
+
+  console.log('💬 ===== WEBHOOK PROCESSING COMPLETE =====');
 });
 
 // 🔥 ДОБАВЛЕНО: Функция для получения username бота
@@ -230,9 +327,14 @@ app.get("/", (req, res) => {
       paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
       supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
     },
+    diagnosticEndpoints: {
+      checkConfig: "/api/check-support-config",
+      testMessage: "/api/test-support-bot-message", 
+      debugInfo: "/api/debug-support",
+      testBot: "/api/test-support-bot"
+    },
     endpoints: {
       test: "/api/test-firebase",
-      testSupportBot: "/api/test-support-bot",
       setupSupportWebhook: "/api/setup-support-webhook (POST, requires auth)",
       adminPayments: "/admin/payments (requires login)",
       adminReviews: "/admin/reviews (requires login)", 
@@ -1584,8 +1686,19 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 border-radius: 3px;
                 cursor: pointer;
                 margin-right: 5px;
+                text-decoration: none;
+                display: inline-block;
             }
             .support-btn:hover { background: #218838; }
+            .diagnostic-links {
+                margin-top: 10px;
+                font-size: 12px;
+            }
+            .diagnostic-links a {
+                color: #155724;
+                text-decoration: underline;
+                margin-right: 10px;
+            }
         </style>
     </head>
     <body>
@@ -1605,10 +1718,15 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     </span>
                     ${SUPPORT_BOT_TOKEN ? 
                       `<a href="${supportBotLink}" target="_blank" class="support-btn">Open Bot</a> 
-                       <a href="/api/test-support-bot" target="_blank" class="support-btn">Test Bot</a> 
+                       <a href="/api/test-support-bot-message" target="_blank" class="support-btn">Test Message</a> 
                        <button onclick="setupSupportWebhook()" class="support-btn">Setup Webhook</button>` 
                       : 'Add SUPPORT_BOT_TOKEN to environment variables'}
                 </p>
+                <div class="diagnostic-links">
+                    <a href="/api/check-support-config" target="_blank">Check Config</a>
+                    <a href="/api/debug-support" target="_blank">Debug Info</a>
+                    <a href="/api/test-support-bot" target="_blank">Test Bot</a>
+                </div>
                 <p><small>Users can write to the support bot, and messages will be forwarded to you. Reply to forwarded messages to answer users.</small></p>
             </div>
             
@@ -1976,11 +2094,14 @@ app.listen(PORT, () => {
   console.log(`🎮 Game types support: PoE2, PoE1`);
   console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
   
-  console.log(`\n🔧 Test Endpoints:`);
-  console.log(`   🔧 Test PayPal Bot: https://paypal-server-46qg.onrender.com/api/test-firebase`);
-  console.log(`   🔧 Test Support Bot: https://paypal-server-46qg.onrender.com/api/test-support-bot`);
-  console.log(`   👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments`);
-  console.log(`   📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
+  console.log(`\n🔧 Diagnostic Endpoints:`);
+  console.log(`   📊 Check Config: https://paypal-server-46qg.onrender.com/api/check-support-config`);
+  console.log(`   🧪 Test Message: https://paypal-server-46qg.onrender.com/api/test-support-bot-message`);
+  console.log(`   🔍 Debug Info: https://paypal-server-46qg.onrender.com/api/debug-support`);
+  console.log(`   🤖 Test Bot: https://paypal-server-46qg.onrender.com/api/test-support-bot`);
+  
+  console.log(`\n👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments`);
+  console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
   
   console.log(`\n🌐 Webhooks:`);
   console.log(`   💳 PayPal Webhook: https://paypal-server-46qg.onrender.com/webhook`);
