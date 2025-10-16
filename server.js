@@ -161,7 +161,7 @@ async function backupToGoogleSheets(paymentData) {
   }
 }
 
-// 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для создания платежа в NowPayments
+// 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Для создания платежа в NowPayments
 async function createNowPaymentsPayment(paymentData) {
   try {
     const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
@@ -170,10 +170,16 @@ async function createNowPaymentsPayment(paymentData) {
       throw new Error('NowPayments API key not configured');
     }
 
+    // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ
+    const minAmount = 5.00; // Минимальная сумма $5
+    if (paymentData.amount < minAmount) {
+      throw new Error(`Minimum payment amount is $${minAmount}. Your amount: $${paymentData.amount}`);
+    }
+
     const orderData = {
       price_amount: paymentData.amount,
       price_currency: 'usd',
-      pay_currency: paymentData.pay_currency || 'btc',
+      pay_currency: null, // 🔥 УБИРАЕМ фиксированную валюту, пусть пользователь выбирает
       order_id: paymentData.order_id,
       order_description: paymentData.order_description,
       ipn_callback_url: 'https://paypal-server-46qg.onrender.com/webhook/nowpayments',
@@ -412,11 +418,20 @@ app.post("/api/create-crypto-payment", async (req, res) => {
       });
     }
 
+    // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ НА СЕРВЕРЕ
+    const minAmount = 5.00;
+    if (parseFloat(amount) < minAmount) {
+      return res.status(400).json({
+        success: false,
+        error: `Minimum crypto payment is $${minAmount}. Your amount: $${amount}`
+      });
+    }
+
     const order_id = `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const paymentData = {
       amount: parseFloat(amount),
-      pay_currency: 'btc',
+      pay_currency: null, // 🔥 Теперь пользователь выбирает валюту
       order_id: order_id,
       order_description: `PoE Currency - ${nickname} (${gameType})`,
       success_url: success_url || 'https://poestock.net',
@@ -494,6 +509,63 @@ app.get("/api/payment-status/:payment_id", async (req, res) => {
   }
 });
 
+// 🔥 ДОБАВЛЕНО: ДИАГНОСТИКА NOWPAYMENTS
+app.get("/api/nowpayments-diagnostics", async (req, res) => {
+  try {
+    const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
+    
+    if (!NOWPAYMENTS_API_KEY) {
+      return res.json({
+        success: false,
+        message: 'NowPayments API key not configured'
+      });
+    }
+
+    // Проверяем статус API
+    const statusResponse = await axios.get('https://api.nowpayments.io/v1/status', {
+      headers: {
+        'x-api-key': NOWPAYMENTS_API_KEY
+      }
+    });
+
+    // Проверяем доступные валюты
+    const currenciesResponse = await axios.get('https://api.nowpayments.io/v1/currencies', {
+      headers: {
+        'x-api-key': NOWPAYMENTS_API_KEY
+      }
+    });
+
+    // Проверяем минимальные суммы
+    const minAmountResponse = await axios.get('https://api.nowpayments.io/v1/min-amount', {
+      headers: {
+        'x-api-key': NOWPAYMENTS_API_KEY
+      },
+      params: {
+        currency_from: 'usd',
+        currency_to: 'btc'
+      }
+    });
+
+    res.json({
+      success: true,
+      diagnostics: {
+        apiStatus: statusResponse.data,
+        currencies: currenciesResponse.data,
+        minAmount: minAmountResponse.data,
+        yourApiKey: NOWPAYMENTS_API_KEY ? 'CONFIGURED' : 'MISSING'
+      }
+    });
+    
+  } catch (error) {
+    console.error('NowPayments diagnostics error:', error.message);
+    res.json({
+      success: false,
+      message: 'NowPayments diagnostics failed: ' + error.message,
+      errorDetails: error.response?.data
+    });
+  }
+});
+
 // 🔥 ОБНОВЛЕННЫЙ WEBHOOK ДЛЯ NOWPAYMENTS
 app.post("/webhook/nowpayments", async (req, res) => {
   const paymentData = req.body;
@@ -505,9 +577,6 @@ app.post("/webhook/nowpayments", async (req, res) => {
     // Проверяем статус платежа
     if (paymentData.payment_status === 'finished' || paymentData.payment_status === 'confirmed') {
       console.log('✅ NowPayments payment successful');
-      
-      // Извлекаем данные из order_id
-      const orderId = paymentData.order_id || '';
       
       const processedData = {
         amount: paymentData.price_amount,
@@ -872,6 +941,7 @@ app.get("/", (req, res) => {
     endpoints: {
       test: "/api/test-firebase",
       nowpaymentsStatus: "/api/nowpayments-status",
+      nowpaymentsDiagnostics: "/api/nowpayments-diagnostics",
       createCryptoPayment: "/api/create-crypto-payment (POST)",
       paymentStatus: "/api/payment-status/:payment_id",
       adminPayments: "/admin/payments (requires login)",
@@ -1982,6 +2052,7 @@ app.listen(PORT, () => {
   console.log(`💳 Payment methods: PayPal, NowPayments (Crypto)`);
   console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
   console.log(`🔧 Test NowPayments: https://paypal-server-46qg.onrender.com/api/nowpayments-status`);
+  console.log(`🔧 NowPayments Diagnostics: https://paypal-server-46qg.onrender.com/api/nowpayments-diagnostics`);
   console.log(`🔧 Create Crypto Payment: POST https://paypal-server-46qg.onrender.com/api/create-crypto-payment`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
