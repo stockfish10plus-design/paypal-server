@@ -18,19 +18,8 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-// 🔥 ОБНОВЛЕНО: Настройки CORS для вашего домена
-app.use(cors({
-  origin: [
-    'https://poestock.net',
-    'https://www.poestock.net', 
-    'http://localhost:3000',
-    'http://localhost:8080'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
 app.use(bodyParser.json());
+app.use(cors());
 
 // 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
 async function saveReviewToFirestore(reviewData) {
@@ -111,14 +100,14 @@ async function backupToGoogleSheets(paymentData) {
     console.log('📤 Sending to Google Sheets...');
     console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
 
+    // 🔥 ФОРМАТ ДАННЫХ ДЛЯ НОВОГО GOOGLE APPS SCRIPT
     const sheetsData = {
       transactionId: paymentData.transactionId || 'N/A',
       nickname: paymentData.nickname || 'No nickname',
       payerEmail: paymentData.payerEmail || 'No email',
       amount: paymentData.amount || '0',
       items: paymentData.items || [],
-      gameType: paymentData.gameType || 'unknown',
-      paymentMethod: paymentData.paymentMethod || 'paypal'
+      gameType: paymentData.gameType || 'unknown'
     };
 
     console.log('📨 Data for Google Sheets:', JSON.stringify(sheetsData, null, 2));
@@ -158,59 +147,6 @@ async function backupToGoogleSheets(paymentData) {
     console.error('❌ Google Sheets backup failed:', error.message);
     console.error('🔍 Error details:', error.stack);
     return { success: false, error: error.message };
-  }
-}
-
-// 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Для создания платежа в NowPayments
-async function createNowPaymentsPayment(paymentData) {
-  try {
-    const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
-    
-    if (!NOWPAYMENTS_API_KEY) {
-      throw new Error('NowPayments API key not configured');
-    }
-
-    // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ
-    const minAmount = 5.00; // Минимальная сумма $5
-    if (paymentData.price_amount < minAmount) {
-      throw new Error(`Minimum payment amount is $${minAmount}. Your amount: $${paymentData.price_amount}`);
-    }
-
-    const orderData = {
-      price_amount: paymentData.price_amount,
-      price_currency: 'usd',
-      pay_currency: paymentData.pay_currency,
-      order_id: paymentData.order_id,
-      order_description: paymentData.order_description,
-      ipn_callback_url: 'https://paypal-server-46qg.onrender.com/webhook/nowpayments',
-      success_url: paymentData.success_url,
-      cancel_url: paymentData.cancel_url
-    };
-
-    console.log('💰 Creating NowPayments payment:', JSON.stringify(orderData, null, 2));
-
-    const response = await axios.post('https://api.nowpayments.io/v1/payment', orderData, {
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': NOWPAYMENTS_API_KEY
-      },
-      timeout: 10000
-    });
-
-    console.log('✅ NowPayments payment created:', response.data);
-    
-    return { 
-      success: true, 
-      data: response.data,
-      payment_url: response.data.invoice_url || `https://nowpayments.io/payment/?iid=${response.data.payment_id}`
-    };
-    
-  } catch (error) {
-    console.error('❌ NowPayments API error:', error.response?.data || error.message);
-    return { 
-      success: false, 
-      error: error.response?.data?.message || error.message 
-    };
   }
 }
 
@@ -298,16 +234,23 @@ function authMiddleware(req, res, next) {
 const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
+// 🔥 ИЗМЕНЕНО: Убираем локальный файл для отзывов, так как теперь используем Firestore
+const reviewsFile = path.join(__dirname, "reviews.json");
+// Файл оставляем для обратной совместимости, но основной источник - Firestore
+
 // 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
     
+    // Проверяем, нет ли уже такой транзакции
     const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
     
     if (existingIndex !== -1) {
+      // Обновляем существующую запись
       purchases[existingIndex] = paymentData;
     } else {
+      // Добавляем новую запись
       purchases.push(paymentData);
     }
     
@@ -350,22 +293,16 @@ async function savePaymentToFirebase(paymentData) {
       amount: {
         total: paymentData.amount,
         currency: paymentData.currency || 'USD',
-        items: paymentData.items ? paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0) : paymentData.amount
+        items: paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0)
       },
       
-      items: paymentData.items ? paymentData.items.map((item, index) => ({
+      items: paymentData.items.map((item, index) => ({
         id: index + 1,
         name: item.name,
         quantity: item.qty,
         price: item.price,
         subtotal: (item.price * item.qty).toFixed(2)
-      })) : [{
-        id: 1,
-        name: 'Crypto Payment',
-        quantity: 1,
-        price: paymentData.amount,
-        subtotal: paymentData.amount
-      }],
+      })),
       
       timestamps: {
         createdAt: new Date(),
@@ -377,21 +314,22 @@ async function savePaymentToFirebase(paymentData) {
         deliveredAt: null
       },
 
+      // 🔥 ДОБАВЛЕНО: Поле для отслеживания оставленных отзывов
       reviewLeft: false,
       reviewName: null,
 
-      gameType: paymentData.gameType || 'unknown',
-
-      paymentMethod: paymentData.paymentMethod || 'paypal'
+      // 🔥 ДОБАВЛЕНО: Поле для типа игры
+      gameType: paymentData.gameType || 'unknown'
     };
     
     await paymentRef.set(firebaseData);
     
     console.log('✅ Successfully saved to Firebase, ID:', paymentRef.id);
     
+    // 🔥 ДОБАВЛЕНО: Сохраняем также в локальный файл
     const localSaveResult = savePaymentToLocal({
       ...firebaseData,
-      firebaseId: paymentRef.id
+      firebaseId: paymentRef.id  // Сохраняем ID из Firebase для связи
     });
     
     return { 
@@ -406,416 +344,20 @@ async function savePaymentToFirebase(paymentData) {
   }
 }
 
-// 🔥 ИСПРАВЛЕННЫЙ API: Для создания платежа NowPayments
-app.post("/api/create-crypto-payment", async (req, res) => {
-  try {
-    console.log('📥 Received crypto payment request:', JSON.stringify(req.body, null, 2));
-    
-    // 🔥 ИСПРАВЛЕНИЕ: Принимаем как новые поля, так и старые для обратной совместимости
-    const {
-      amount,           // Новое поле
-      nickname,         // Новое поле  
-      gameType,         // Новое поле
-      items,            // Новое поле
-      success_url,      // Новое поле
-      cancel_url,       // Новое поле
-      
-      // Старые поля для обратной совместимости
-      price_amount,
-      pay_currency,
-      order_id,
-      order_description
-    } = req.body;
-    
-    // 🔥 ИСПРАВЛЕНИЕ: Используем новые поля или старые как fallback
-    const finalAmount = amount || price_amount;
-    const finalNickname = nickname || 'Crypto Buyer';
-    const finalGameType = gameType || 'unknown';
-    const finalItems = items || [];
-    const finalPayCurrency = pay_currency || 'btc'; // fallback
-    const finalOrderId = order_id || `NP_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const finalOrderDescription = order_description || `PoE Currency - ${finalNickname} (${finalGameType})`;
-    
-    if (!finalAmount || !finalNickname || !finalGameType) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: amount, nickname, gameType',
-        received: req.body
-      });
-    }
-
-    // 🔥 ПРОВЕРКА МИНИМАЛЬНОЙ СУММЫ НА СЕРВЕРЕ
-    const minAmount = 5.00;
-    if (parseFloat(finalAmount) < minAmount) {
-      return res.status(400).json({
-        success: false,
-        error: `Minimum crypto payment is $${minAmount}. Your amount: $${finalAmount}`
-      });
-    }
-
-    // 🔥 ИСПРАВЛЕНИЕ: Создаем данные для NowPayments API
-    const nowPaymentsData = {
-      price_amount: parseFloat(finalAmount),
-      price_currency: 'usd',
-      pay_currency: finalPayCurrency,
-      order_id: finalOrderId,
-      order_description: finalOrderDescription,
-      ipn_callback_url: 'https://paypal-server-46qg.onrender.com/webhook/nowpayments',
-      success_url: success_url || 'https://poestock.net',
-      cancel_url: cancel_url || 'https://poestock.net'
-    };
-
-    console.log('💰 Creating NowPayments payment with data:', JSON.stringify(nowPaymentsData, null, 2));
-    
-    const nowpaymentsResult = await createNowPaymentsPayment(nowPaymentsData);
-    
-    if (nowpaymentsResult.success) {
-      // Сохраняем информацию о платеже в Firebase
-      const pendingPayment = {
-        transactionId: finalOrderId,
-        paymentId: nowpaymentsResult.data.payment_id,
-        status: 'pending',
-        nickname: finalNickname,
-        amount: finalAmount,
-        items: finalItems,
-        gameType: finalGameType,
-        paymentMethod: 'crypto',
-        payerEmail: 'crypto@payment.com'
-      };
-      
-      await savePaymentToFirebase(pendingPayment);
-      
-      res.json({
-        success: true,
-        payment_url: nowpaymentsResult.payment_url,
-        payment_id: nowpaymentsResult.data.payment_id,
-        order_id: finalOrderId
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: nowpaymentsResult.error
-      });
-    }
-    
-  } catch (error) {
-    console.error('❌ Error creating crypto payment:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create payment: ' + error.message
-    });
-  }
-});
-
-// 🔥 ДОБАВЛЕНО: Проверка статуса NowPayments
-app.get("/api/payment-status/:payment_id", async (req, res) => {
-  try {
-    const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
-    const payment_id = req.params.payment_id;
-    
-    const response = await axios.get(`https://api.nowpayments.io/v1/payment/${payment_id}`, {
-      headers: {
-        'x-api-key': NOWPAYMENTS_API_KEY
-      }
-    });
-    
-    res.json({
-      success: true,
-      status: response.data.payment_status,
-      data: response.data
-    });
-    
-  } catch (error) {
-    console.error('❌ Error checking payment status:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to check payment status'
-    });
-  }
-});
-
-// 🔥 ДОБАВЛЕНО: ДИАГНОСТИКА NOWPAYMENTS
-app.get("/api/nowpayments-diagnostics", async (req, res) => {
-  try {
-    const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
-    
-    if (!NOWPAYMENTS_API_KEY) {
-      return res.json({
-        success: false,
-        message: 'NowPayments API key not configured'
-      });
-    }
-
-    // Проверяем статус API
-    const statusResponse = await axios.get('https://api.nowpayments.io/v1/status', {
-      headers: {
-        'x-api-key': NOWPAYMENTS_API_KEY
-      }
-    });
-
-    // Проверяем доступные валюты
-    const currenciesResponse = await axios.get('https://api.nowpayments.io/v1/currencies', {
-      headers: {
-        'x-api-key': NOWPAYMENTS_API_KEY
-      }
-    });
-
-    // Проверяем минимальные суммы
-    const minAmountResponse = await axios.get('https://api.nowpayments.io/v1/min-amount', {
-      headers: {
-        'x-api-key': NOWPAYMENTS_API_KEY
-      },
-      params: {
-        currency_from: 'usd',
-        currency_to: 'btc'
-      }
-    });
-
-    res.json({
-      success: true,
-      diagnostics: {
-        apiStatus: statusResponse.data,
-        currencies: currenciesResponse.data,
-        minAmount: minAmountResponse.data,
-        yourApiKey: NOWPAYMENTS_API_KEY ? 'CONFIGURED' : 'MISSING'
-      }
-    });
-    
-  } catch (error) {
-    console.error('NowPayments diagnostics error:', error.message);
-    res.json({
-      success: false,
-      message: 'NowPayments diagnostics failed: ' + error.message,
-      errorDetails: error.response?.data
-    });
-  }
-});
-
-// 🔥 ОБНОВЛЕННЫЙ WEBHOOK ДЛЯ NOWPAYMENTS
-app.post("/webhook/nowpayments", async (req, res) => {
-  const paymentData = req.body;
-  
-  console.log('💰 ===== NOWPAYMENTS WEBHOOK RECEIVED =====');
-  console.log('📦 Payment data:', JSON.stringify(paymentData, null, 2));
-
-  try {
-    // Проверяем статус платежа
-    if (paymentData.payment_status === 'finished' || paymentData.payment_status === 'confirmed') {
-      console.log('✅ NowPayments payment successful');
-      
-      const processedData = {
-        amount: paymentData.price_amount,
-        currency: paymentData.pay_currency || 'USD',
-        payerEmail: paymentData.payer_email || 'crypto@payment.com',
-        paymentId: paymentData.payment_id,
-        status: 'completed',
-        nickname: 'Crypto Buyer',
-        items: [], // NowPayments не передает детали корзины
-        transactionId: paymentData.payment_id,
-        gameType: 'unknown',
-        paymentMethod: 'crypto'
-      };
-      
-      console.log('🔥 Saving NowPayments payment to Firebase...');
-      const firebaseResult = await savePaymentToFirebase(processedData);
-      
-      if (!firebaseResult.success) {
-        console.error('❌ Firebase save error:', firebaseResult.error);
-      } else {
-        console.log('✅ NowPayments payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
-      }
-
-      // Отправляем в Google Sheets
-      try {
-        console.log('📤 Sending NowPayments payment to Google Sheets...');
-        const googleSheetsResult = await backupToGoogleSheets(processedData);
-        
-        if (!googleSheetsResult.success) {
-          console.error('❌ Google Sheets save error:', googleSheetsResult.error);
-        } else {
-          console.log('✅ NowPayments payment saved to Google Sheets successfully');
-        }
-      } catch (googleSheetsError) {
-        console.error('❌ Google Sheets processing error:', googleSheetsError);
-      }
-
-      // Telegram уведомление
-      const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-      const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-      if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-        try {
-          await axios.post(
-            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-            {
-              chat_id: TELEGRAM_CHAT_ID,
-              text: `💰 New Crypto Payment:
-Transaction: ${paymentData.payment_id}
-Amount: $${paymentData.price_amount} ${paymentData.pay_currency}
-Payment Method: NowPayments`
-            }
-          );
-          console.log('✅ Telegram notification sent for NowPayments');
-        } catch (err) {
-          console.error("❌ Telegram error:", err.message);
-        }
-      }
-
-      res.status(200).json({ success: true, message: 'Payment processed successfully' });
-    } else {
-      console.log('⚠️ NowPayments payment not finished:', paymentData.payment_status);
-      res.status(200).json({ success: true, message: 'Webhook received, payment not finished' });
-    }
-  } catch (error) {
-    console.error('❌ NowPayments webhook error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// 🔥 ОБНОВЛЕННЫЙ WEBHOOK ДЛЯ PAYPAL
-app.post("/webhook", async (req, res) => {
-  const details = req.body;
-  
-  const paymentMethod = details.payer_email ? 'paypal' : 'crypto';
-  
-  if (paymentMethod === 'crypto') {
-    return app._router.handle(req, res, () => {
-      req.url = '/webhook/nowpayments';
-      req.method = 'POST';
-      app._router.handle(req, res);
-    });
-  }
-
-  const nickname = details.nickname || "No nickname";
-  const gameType = details.gameType || 'unknown';
-
-  console.log('💰 ===== NEW PAYPAL PAYMENT WEBHOOK =====');
-  console.log('🎮 Game Type:', gameType);
-  console.log('👤 Nickname:', nickname);
-  console.log('💳 Transaction ID:', details.transactionId);
-
-  try {
-    const paymentData = {
-      amount: details.amount,
-      currency: 'USD',
-      payerEmail: details.payerEmail || 'unknown@email.com',
-      paymentId: details.paymentId || details.transactionId,
-      status: 'completed',
-      nickname: nickname,
-      items: details.items,
-      transactionId: details.transactionId,
-      gameType: gameType,
-      paymentMethod: 'paypal'
-    };
-    
-    console.log('🔥 Saving to Firebase...');
-    const firebaseResult = await savePaymentToFirebase(paymentData);
-    
-    if (!firebaseResult.success) {
-      console.error('❌ Firebase save error:', firebaseResult.error);
-    } else {
-      console.log('✅ Payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
-    }
-  } catch (firebaseError) {
-    console.error('❌ Firebase processing error:', firebaseError);
-  }
-
-  try {
-    console.log('📤 Sending to Google Sheets...');
-    const googleSheetsResult = await backupToGoogleSheets({
-      transactionId: details.transactionId,
-      nickname: nickname,
-      payerEmail: details.payerEmail || 'unknown@email.com',
-      amount: details.amount,
-      items: details.items,
-      gameType: gameType,
-      paymentMethod: 'paypal'
-    });
-    
-    if (!googleSheetsResult.success) {
-      console.error('❌ Google Sheets save error:', googleSheetsResult.error);
-    } else {
-      console.log('✅ Payment saved to Google Sheets successfully');
-    }
-  } catch (googleSheetsError) {
-    console.error('❌ Google Sheets processing error:', googleSheetsError);
-  }
-
-  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    try {
-      const itemsText = details.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
-      
-      await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-        {
-          chat_id: TELEGRAM_CHAT_ID,
-          text: `💰 New PayPal Payment (${gameType}):
-Transaction: ${details.transactionId}
-Buyer: ${nickname}
-Amount: $${details.amount}
-Items:
-${itemsText}`
-        }
-      );
-      console.log('✅ Telegram notification sent');
-    } catch (err) {
-      console.error("❌ Telegram error:", err.message);
-    }
-  }
-
-  console.log('✅ ===== PAYPAL WEBHOOK PROCESSING COMPLETE =====');
-  res.status(200).send("OK");
-});
-
-// 🔥 ДОБАВЛЕНО: Проверка NowPayments подключения
-app.get("/api/nowpayments-status", async (req, res) => {
-  try {
-    const NOWPAYMENTS_API_KEY = process.env.NOWPAYMENTS_API_KEY;
-    
-    if (!NOWPAYMENTS_API_KEY) {
-      return res.json({
-        success: false,
-        message: 'NowPayments API key not configured'
-      });
-    }
-
-    const response = await axios.get('https://api.nowpayments.io/v1/status', {
-      headers: {
-        'x-api-key': NOWPAYMENTS_API_KEY
-      },
-      timeout: 5000
-    });
-
-    res.json({
-      success: true,
-      message: 'NowPayments API is working',
-      status: response.data
-    });
-    
-  } catch (error) {
-    console.error('NowPayments status check error:', error.message);
-    res.json({
-      success: false,
-      message: 'NowPayments API connection failed: ' + error.message
-    });
-  }
-});
-
 // 🔥 ДОБАВЛЕНО: Функции очистки данных
 app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
   try {
-    const { type } = req.body;
+    const { type } = req.body; // 'local', 'firebase', 'all'
     
     let result = { success: true, messages: [] };
 
+    // Очистка локальных данных
     if (type === 'local' || type === 'all') {
       fs.writeFileSync(purchasesFile, "[]", "utf-8");
       result.messages.push("✅ Local purchases cleared");
     }
 
+    // Очистка Firebase
     if (type === 'firebase' || type === 'all') {
       if (db) {
         const paymentsRef = db.collection('payments');
@@ -847,6 +389,7 @@ app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
 
 app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
   try {
+    // 🔥 ИЗМЕНЕНО: Очищаем отзывы из Firestore вместо локального файла
     if (db) {
       const reviewsRef = db.collection('reviews');
       const snapshot = await reviewsRef.get();
@@ -860,6 +403,7 @@ app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
       console.log(`✅ Firestore reviews cleared (${deletePromises.length} documents)`);
     }
     
+    // 🔥 ДОБАВЛЕНО: Также сбрасываем флаги отзывов в Firebase
     if (db) {
       const paymentsRef = db.collection('payments');
       const snapshot = await paymentsRef.get();
@@ -903,13 +447,10 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
         poe2: 0,
         poe1: 0,
         unknown: 0
-      },
-      paymentMethods: {
-        paypal: 0,
-        crypto: 0
       }
     };
 
+    // Локальные покупки
     try {
       const localData = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
       stats.localPurchases = localData.length;
@@ -917,25 +458,21 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       stats.localPurchases = 0;
     }
 
+    // Firebase покупки и статистика по играм
     if (db) {
       try {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.get();
         stats.firebasePurchases = snapshot.size;
         
+        // 🔥 ДОБАВЛЕНО: Статистика по играм
         snapshot.forEach(doc => {
           const data = doc.data();
           const gameType = data.gameType || 'unknown';
-          const paymentMethod = data.paymentMethod || 'paypal';
-          
           if (stats.gameStats[gameType] !== undefined) {
             stats.gameStats[gameType]++;
           } else {
             stats.gameStats.unknown++;
-          }
-          
-          if (stats.paymentMethods[paymentMethod] !== undefined) {
-            stats.paymentMethods[paymentMethod]++;
           }
         });
       } catch (e) {
@@ -943,6 +480,7 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       }
     }
 
+    // 🔥 ИЗМЕНЕНО: Отзывы из Firestore
     if (db) {
       try {
         const reviewsRef = db.collection('reviews');
@@ -965,15 +503,10 @@ app.get("/", (req, res) => {
     message: "PayPal Server is running!",
     endpoints: {
       test: "/api/test-firebase",
-      nowpaymentsStatus: "/api/nowpayments-status",
-      nowpaymentsDiagnostics: "/api/nowpayments-diagnostics",
-      createCryptoPayment: "/api/create-crypto-payment (POST)",
-      paymentStatus: "/api/payment-status/:payment_id",
       adminPayments: "/admin/payments (requires login)",
       adminReviews: "/admin/reviews (requires login)", 
       localPayments: "/local/payments (backup view)",
       webhook: "/webhook",
-      nowpaymentsWebhook: "/webhook/nowpayments",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)",
       testGoogleSheets: "/api/test-google-sheets (POST)"
@@ -998,6 +531,96 @@ app.post("/api/login", (req, res) => {
     success: false,
     error: "Invalid credentials" 
   });
+});
+
+// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ
+app.post("/webhook", async (req, res) => {
+  const details = req.body;
+  const nickname = details.nickname || "No nickname";
+  const gameType = details.gameType || 'unknown';
+
+  console.log('💰 ===== NEW PAYMENT WEBHOOK =====');
+  console.log('🎮 Game Type:', gameType);
+  console.log('👤 Nickname:', nickname);
+  console.log('💳 Transaction ID:', details.transactionId);
+  console.log('💰 Amount:', details.amount);
+  console.log('📦 Items:', JSON.stringify(details.items, null, 2));
+
+  // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase
+  try {
+    const paymentData = {
+      amount: details.amount,
+      currency: 'USD',
+      payerEmail: details.payerEmail || 'unknown@email.com',
+      paymentId: details.paymentId || details.transactionId,
+      status: 'completed',
+      nickname: nickname,
+      items: details.items,
+      transactionId: details.transactionId,
+      gameType: gameType
+    };
+    
+    console.log('🔥 Saving to Firebase...');
+    const firebaseResult = await savePaymentToFirebase(paymentData);
+    
+    if (!firebaseResult.success) {
+      console.error('❌ Firebase save error:', firebaseResult.error);
+    } else {
+      console.log('✅ Payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
+    }
+  } catch (firebaseError) {
+    console.error('❌ Firebase processing error:', firebaseError);
+  }
+
+  // 🔥 ДОБАВЛЕНО: Отправляем в Google Sheets СРАЗУ ПОСЛЕ Firebase
+  try {
+    console.log('📤 Sending to Google Sheets...');
+    const googleSheetsResult = await backupToGoogleSheets({
+      transactionId: details.transactionId,
+      nickname: nickname,
+      payerEmail: details.payerEmail || 'unknown@email.com',
+      amount: details.amount,
+      items: details.items,
+      gameType: gameType
+    });
+    
+    if (!googleSheetsResult.success) {
+      console.error('❌ Google Sheets save error:', googleSheetsResult.error);
+    } else {
+      console.log('✅ Payment saved to Google Sheets successfully');
+    }
+  } catch (googleSheetsError) {
+    console.error('❌ Google Sheets processing error:', googleSheetsError);
+  }
+
+  // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
+  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+    try {
+      const itemsText = details.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
+      
+      await axios.post(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          chat_id: TELEGRAM_CHAT_ID,
+          text: `💰 New purchase (${gameType}):
+Transaction: ${details.transactionId}
+Buyer: ${nickname}
+Amount: $${details.amount}
+Items:
+${itemsText}`
+        }
+      );
+      console.log('✅ Telegram notification sent');
+    } catch (err) {
+      console.error("❌ Telegram error:", err.message);
+    }
+  }
+
+  console.log('✅ ===== WEBHOOK PROCESSING COMPLETE =====');
+  res.status(200).send("OK");
 });
 
 // 🔧 ДОБАВЛЕНО: Тестовый маршрут для проверки Firebase
@@ -1047,8 +670,7 @@ app.post("/api/test-firebase-payment", async (req, res) => {
       nickname: 'Test User',
       items: [{ name: 'Test Product', qty: 1, price: 10.99 }],
       transactionId: 'test-txn-' + Date.now(),
-      gameType: 'poe2',
-      paymentMethod: 'paypal'
+      gameType: 'poe2' // 🔥 ДОБАВЛЕНО: gameType для теста
     };
     
     const result = await savePaymentToFirebase(testPaymentData);
@@ -1088,8 +710,7 @@ app.post("/api/test-google-sheets", async (req, res) => {
         { name: 'Exalted Orb', qty: 2, price: 5.00 },
         { name: 'Divine Orb', qty: 1, price: 1.50 }
       ],
-      gameType: 'poe2',
-      paymentMethod: 'paypal'
+      gameType: 'poe2'
     };
 
     console.log('📤 Sending test data to Google Sheets...');
@@ -1119,7 +740,7 @@ app.post("/api/test-google-sheets", async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ
+// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId + сохранение в Firestore
 app.post("/api/reviews", async (req, res) => {
   const { name, review, transactionId } = req.body;
   
@@ -1134,6 +755,7 @@ app.post("/api/reviews", async (req, res) => {
     let alreadyReviewed = false;
     let foundTransactionId = null;
 
+    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
     if (db && transactionId) {
       try {
         const paymentsRef = db.collection('payments');
@@ -1144,6 +766,7 @@ app.post("/api/reviews", async (req, res) => {
           const paymentData = snapshot.docs[0].data();
           foundTransactionId = paymentData.transactionId;
           
+          // Проверяем, не оставлен ли уже отзыв для этой транзакции
           if (paymentData.reviewLeft) {
             alreadyReviewed = true;
             console.log(`❌ Transaction ${transactionId} already has a review`);
@@ -1156,6 +779,7 @@ app.post("/api/reviews", async (req, res) => {
       }
     }
 
+    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (!hasValidPurchase) {
       console.log(`❌ No valid purchase found for review - rejected`);
       return res.status(403).json({ 
@@ -1163,6 +787,7 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
+    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (alreadyReviewed) {
       console.log(`❌ Review already exists for this purchase - rejected`);
       return res.status(403).json({ 
@@ -1170,6 +795,7 @@ app.post("/api/reviews", async (req, res) => {
       });
     }
 
+    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ В FIRESTORE
     const reviewData = { 
       name,
       review, 
@@ -1182,6 +808,7 @@ app.post("/api/reviews", async (req, res) => {
       throw new Error('Failed to save review to database');
     }
 
+    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
     if (db && foundTransactionId) {
       try {
         const paymentsRef = db.collection('payments');
@@ -1212,8 +839,9 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore
+// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore с правильным форматированием дат
 app.get("/api/reviews", async (req, res) => {
+  // 🔥 ДОБАВЛЕНО: Заголовки против кэширования
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -1222,17 +850,20 @@ app.get("/api/reviews", async (req, res) => {
     const result = await getReviewsFromFirestore();
     
     if (result.success) {
+      // 🔥 ИСПРАВЛЕННОЕ ФОРМАТИРОВАНИЕ ДАТЫ
       const formattedReviews = result.reviews.map(review => {
         let date;
         
+        // Обрабатываем Firestore Timestamp
         if (review.createdAt && review.createdAt.toDate) {
-          date = review.createdAt.toDate();
+          date = review.createdAt.toDate(); // Конвертируем Firestore Timestamp в Date
         } else if (review.createdAt) {
-          date = new Date(review.createdAt);
+          date = new Date(review.createdAt); // Обычная строка даты
         } else {
-          date = new Date();
+          date = new Date(); // Fallback
         }
         
+        // Форматируем дату
         const formattedDate = date.toLocaleDateString('ru-RU', {
           year: 'numeric',
           month: 'long', 
@@ -1242,7 +873,7 @@ app.get("/api/reviews", async (req, res) => {
         return {
           name: review.name,
           review: review.review,
-          date: formattedDate
+          date: formattedDate // Теперь это строка, а не объект
         };
       });
       
@@ -1262,14 +893,17 @@ app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   const reviewId = req.params.id;
   
   try {
+    // 🔥 Удаляем отзыв из Firestore
     const deleteResult = await deleteReviewFromFirestore(reviewId);
     
     if (!deleteResult.success) {
       throw new Error(deleteResult.error);
     }
     
+    // 🔥 Сбрасываем флаг отзыва в Firebase для соответствующей покупки
     if (db) {
       try {
+        // Получаем информацию об отзыве чтобы найти transactionId
         const reviewRef = db.collection('reviews').doc(reviewId);
         const reviewDoc = await reviewRef.get();
         
@@ -1307,7 +941,7 @@ app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ОТЗЫВОВ
+// 🔥 ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ОТЗЫВОВ: получает данные из Firestore
 app.get("/admin/reviews", authMiddleware, async (req, res) => {
   try {
     const result = await getReviewsFromFirestore();
@@ -1435,6 +1069,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
                     if (result.success) {
                         document.getElementById('review-' + reviewId).remove();
                         alert('Review deleted successfully!');
+                        // Перезагружаем страницу чтобы обновить список
                         setTimeout(() => window.location.reload(), 1000);
                     } else {
                         throw new Error(result.error);
@@ -1531,8 +1166,7 @@ app.get("/local/payments", (req, res) => {
             <table>
                 <thead>
                     <tr>
-                        <th>Game</th>
-                        <th>Payment Method</th>
+                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
@@ -1554,8 +1188,7 @@ app.get("/local/payments", (req, res) => {
                       
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
-                        <td><strong>${payment.gameType || 'unknown'}</strong></td>
-                        <td><span style="background: ${payment.paymentMethod === 'crypto' ? '#764ba2' : '#0070ba'}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">${payment.paymentMethod || 'paypal'}</span></td>
+                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1577,7 +1210,7 @@ app.get("/local/payments", (req, res) => {
                     `}).join('')}
                     ${purchases.length === 0 ? `
                     <tr>
-                        <td colspan="8" style="text-align: center; padding: 40px;">
+                        <td colspan="7" style="text-align: center; padding: 40px;">
                             No payments found in local backup.
                         </td>
                     </tr>
@@ -1603,7 +1236,7 @@ app.get("/local/payments", (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА
+// 🔥 ОБНОВЛЕННАЯ АДМИНКА: Game в начале, Review удалено
 app.get("/admin/payments", authMiddleware, async (req, res) => {
   try {
     const paymentsRef = db.collection('payments');
@@ -1617,6 +1250,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
       });
     });
     
+    // 🔥 ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ ФАЙЛ при загрузке админки
     try {
       const localPurchases = payments.map(payment => ({
         ...payment,
@@ -1709,15 +1343,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
             .poe2 { background: #0070ba; color: white; }
             .poe1 { background: #28a745; color: white; }
             .unknown { background: #6c757d; color: white; }
-            .payment-badge { 
-                padding: 2px 6px; 
-                border-radius: 3px; 
-                font-size: 10px; 
-                font-weight: bold;
-                margin-left: 5px;
-            }
-            .paypal-badge { background: #0070ba; color: white; }
-            .crypto-badge { background: #764ba2; color: white; }
         </style>
     </head>
     <body>
@@ -1749,17 +1374,12 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     <h3>🎮 Games</h3>
                     <p>PoE2: ${payments.filter(p => p.gameType === 'poe2').length}<br>PoE1: ${payments.filter(p => p.gameType === 'poe1').length}</p>
                 </div>
-                <div class="stat-card">
-                    <h3>💳 Payment Methods</h3>
-                    <p>PayPal: ${payments.filter(p => p.paymentMethod === 'paypal').length}<br>Crypto: ${payments.filter(p => p.paymentMethod === 'crypto').length}</p>
-                </div>
             </div>
             
             <table>
                 <thead>
                     <tr>
-                        <th>Game</th>
-                        <th>Payment Method</th>
+                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
@@ -1788,14 +1408,9 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                       const gameBadgeClass = gameType === 'poe2' ? 'poe2' : gameType === 'poe1' ? 'poe1' : 'unknown';
                       const gameDisplayName = gameType === 'poe2' ? 'PoE2' : gameType === 'poe1' ? 'PoE1' : 'Unknown';
                       
-                      const paymentMethod = payment.paymentMethod || 'paypal';
-                      const paymentBadgeClass = paymentMethod === 'crypto' ? 'crypto-badge' : 'paypal-badge';
-                      const paymentDisplayName = paymentMethod === 'crypto' ? 'Crypto' : 'PayPal';
-                      
                       return `
                     <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
-                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td>
-                        <td><span class="payment-badge ${paymentBadgeClass}">${paymentDisplayName}</span></td>
+                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
                         <td><strong>${payment.transactionId}</strong></td>
                         <td>
                             <div><strong>${payment.buyer.nickname}</strong></div>
@@ -1827,7 +1442,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                     `}).join('')}
                     ${payments.length === 0 ? `
                     <tr>
-                        <td colspan="9" style="text-align: center; padding: 40px;">
+                        <td colspan="8" style="text-align: center; padding: 40px;">
                             No payments found. Payments will appear here after successful transactions.
                         </td>
                     </tr>
@@ -1835,6 +1450,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 </tbody>
             </table>
 
+            <!-- 🔥 ДОБАВЛЕНО: Зона опасности с функциями очистки -->
             <div class="danger-zone">
                 <h3>⚠️ Danger Zone</h3>
                 
@@ -1843,7 +1459,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         <h4>📊 Data Statistics</h4>
                         <p>Local: <span id="local-count">0</span> | Firebase: <span id="firebase-count">0</span> | Reviews: <span id="reviews-count">0</span></p>
                         <p>Games: PoE2: <span id="poe2-count">0</span> | PoE1: <span id="poe1-count">0</span></p>
-                        <p>Payments: PayPal: <span id="paypal-count">0</span> | Crypto: <span id="crypto-count">0</span></p>
                     </div>
                 </div>
 
@@ -1932,6 +1547,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }, 3000);
             }
 
+            // 🔥 ДОБАВЛЕНО: Функции очистки данных
             async function loadStats() {
                 try {
                     const response = await fetch('/api/stats', {
@@ -1945,8 +1561,6 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                         document.getElementById('reviews-count').textContent = result.stats.reviews;
                         document.getElementById('poe2-count').textContent = result.stats.gameStats.poe2;
                         document.getElementById('poe1-count').textContent = result.stats.gameStats.poe1;
-                        document.getElementById('paypal-count').textContent = result.stats.paymentMethods.paypal;
-                        document.getElementById('crypto-count').textContent = result.stats.paymentMethods.crypto;
                     }
                 } catch (error) {
                     console.error('Error loading stats:', error);
@@ -2013,6 +1627,7 @@ app.get("/admin/payments", authMiddleware, async (req, res) => {
                 }
             }
 
+            // Загружаем статистику при старте
             loadStats();
         </script>
     </body>
@@ -2033,6 +1648,7 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   const { transactionId, paymentId } = req.body;
   
   try {
+    // Обновляем в Firebase
     const paymentRef = db.collection('payments').doc(paymentId);
     await paymentRef.update({
       'delivery.delivered': true,
@@ -2040,6 +1656,7 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       'timestamps.updatedAt': new Date()
     });
     
+    // 🔥 ДОБАВЛЕНО: Также обновляем локальный файл
     try {
       const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
       const localPayment = purchases.find(p => p.firebaseId === paymentId || p.transactionId === transactionId);
@@ -2072,16 +1689,13 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
-  console.log(`💰 NowPayments integration: ${process.env.NOWPAYMENTS_API_KEY ? 'READY' : 'NOT CONFIGURED'}`);
   console.log(`🎮 Game types support: PoE2, PoE1`);
-  console.log(`💳 Payment methods: PayPal, NowPayments (Crypto)`);
-  console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
-  console.log(`🔧 Test NowPayments: https://paypal-server-46qg.onrender.com/api/nowpayments-status`);
-  console.log(`🔧 NowPayments Diagnostics: https://paypal-server-46qg.onrender.com/api/nowpayments-diagnostics`);
-  console.log(`🔧 Create Crypto Payment: POST https://paypal-server-46qg.onrender.com/api/create-crypto-payment`);
+  console.log(`📝 Reviews now stored in Firestore collection 'reviews'`);
+  console.log(`🔧 Test Firebase: https://paypal-server-46qg.onrender.com/api/test-firebase`);
+  console.log(`🔧 Test Payment: POST https://paypal-server-46qg.onrender.com/api/test-firebase-payment`);
+  console.log(`🔧 Test Google Sheets: POST https://paypal-server-46qg.onrender.com/api/test-google-sheets`);
   console.log(`👑 Admin Payments: https://paypal-server-46qg.onrender.com/admin/payments`);
   console.log(`⭐ Admin Reviews: https://paypal-server-46qg.onrender.com/admin/reviews`);
   console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
   console.log(`🏠 Home: https://paypal-server-46qg.onrender.com/`);
-  console.log(`💰 NowPayments Webhook: https://paypal-server-46qg.onrender.com/webhook/nowpayments`);
 });
