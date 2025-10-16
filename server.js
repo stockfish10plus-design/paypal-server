@@ -241,13 +241,13 @@ async function handleSupportBotCommand(message) {
     if (text === '/start') {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `👋 <b>Добро пожаловать в поддержку!</b>\n\nПросто напишите ваш вопрос, и я перешлю его администратору. Он ответит вам здесь же.`,
+        text: `👋 <b>Welcome to support!</b>\n\nJust write your question.`,
         parse_mode: 'HTML'
       });
     } else if (text === '/help') {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `ℹ️ <b>Помощь</b>\n\n• Просто напишите ваш вопрос - я перешлю его администратору\n• Администратор ответит вам в этом чате\n• Для связи по платежам укажите ваш transaction ID`,
+        text: `ℹ️ <b>Help</b>\n\n• Just write your question\n• Support will answer you in this chat\n• For payment issues include your transaction ID`,
         parse_mode: 'HTML'
       });
     }
