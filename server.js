@@ -29,7 +29,7 @@ const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с флагом первого сообщения
+// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов
 let userDialogs = new Map();
 
 // ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
@@ -106,8 +106,7 @@ app.post("/webhook-support", async (req, res) => {
           userName: userName,
           started: new Date(),
           separatorMessageId: separatorMessage.data.result.message_id,
-          lastUserMessageId: null,
-          firstMessageSent: false // 🔥 ФЛАГ первого сообщения
+          lastUserMessageId: null
         });
 
         // 🔥 ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ ТОЛЬКО ПРИ ПЕРВОМ КОНТАКТЕ
@@ -128,17 +127,9 @@ app.post("/webhook-support", async (req, res) => {
       });
 
       dialog.lastUserMessageId = userMessage.data.result.message_id;
-      
-      // 🔥 ПОДТВЕРЖДЕНИЕ ТОЛЬКО ПРИ ПЕРВОМ СООБЩЕНИИ ПОСЛЕ СТАРТА
-      if (!dialog.firstMessageSent) {
-        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-          chat_id: chatId,
-          text: `✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.\n\n✅ Your message has been received. We will respond to you shortly.`
-        });
-        dialog.firstMessageSent = true; // 🔥 УСТАНАВЛИВАЕМ ФЛАГ
-      }
-      
       userDialogs.set(userId, dialog);
+      
+      // 🔥 УБРАНО: Подтверждение получения сообщения
       
     } catch (error) {
       console.error('❌ Error:', error.response?.data || error.message);
@@ -164,10 +155,10 @@ app.post("/webhook-support", async (req, res) => {
     
     if (targetUserId && targetDialog && adminReplyText) {
       try {
-        // 🔥 ДУБЛИРОВАНИЕ: Ответ поддержки на русском и английском
+        // 🔥 ПЕРЕДЕЛАНО: Отправляем только чистый ответ без заголовков
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: targetDialog.userChatId,
-          text: `💬 Ответ поддержки:\n\n${adminReplyText}\n\n💬 Support response:\n\n${adminReplyText}`
+          text: adminReplyText // 🔥 ТОЛЬКО ТЕКСТ ОТВЕТА
         });
 
         // Отправляем ответ в диалог
@@ -198,11 +189,6 @@ async function handleSupportBotCommand(message) {
         chat_id: chatId,
         text: `👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.\n\n👋 Welcome to support! Just write your question and we will answer you as soon as possible.`
       });
-      
-      // Сбрасываем флаг первого сообщения при новом /start
-      if (userDialogs.has(userId)) {
-        userDialogs.get(userId).firstMessageSent = false;
-      }
       
     } else if (text === '/help') {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
@@ -1308,7 +1294,7 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 // --- Старт сервера ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
-  console.log(`🤖 Multi-language support: ✅ ENABLED (Russian/English)`);
+  console.log(`🤖 Clean messaging: ✅ ENABLED (No confirmations, only welcome)`);
   console.log(`💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
   console.log(`💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
   console.log(`👑 Admin Panel: http://localhost:${PORT}/admin/payments`);
