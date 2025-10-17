@@ -29,39 +29,7 @@ const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ДОБАВЛЕНО: Мультиязычные сообщения
-const messages = {
-  ru: {
-    welcome: "👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.",
-    help: `ℹ️ Помощь
-
-• Просто напишите ваш вопрос
-• Поддержка ответит вам в этом чате  
-• Для вопросов по оплате укажите ID транзакции
-• Используйте /english для английской версии`,
-    messageReceived: "✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.",
-    supportResponse: "💬 Ответ поддержки",
-    languageChanged: "🌐 Язык изменен на английский. Используйте /russian для переключения обратно.",
-    languageChangedRU: "🌐 Язык изменен на русский. Используйте /english для переключения на английский.",
-    unknownCommand: "❌ Неизвестная команда. Используйте /help для списка команд."
-  },
-  en: {
-    welcome: "👋 Welcome to support! Just write your question and we will answer you as soon as possible.",
-    help: `ℹ️ Help
-
-• Just write your question
-• Support will answer you in this chat
-• For payment issues include your transaction ID
-• Use /russian for Russian version`,
-    messageReceived: "✅ Your message has been received. We will respond to you shortly.",
-    supportResponse: "💬 Support response",
-    languageChanged: "🌐 Language changed to English. Use /russian to switch back.",
-    languageChangedRU: "🌐 Language changed to Russian. Use /english to switch to English.",
-    unknownCommand: "❌ Unknown command. Use /help for command list."
-  }
-};
-
-// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с языковыми настройками
+// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов
 let userDialogs = new Map();
 
 // ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
@@ -126,9 +94,6 @@ app.post("/webhook-support", async (req, res) => {
         return;
       }
 
-      // 🔥 ПРОВЕРЯЕМ ЯЗЫК ПОЛЬЗОВАТЕЛЯ
-      const userLang = getUserLanguage(userId);
-
       // Новый пользователь
       if (!userDialogs.has(userId)) {
         const separatorMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
@@ -141,8 +106,13 @@ app.post("/webhook-support", async (req, res) => {
           userName: userName,
           started: new Date(),
           separatorMessageId: separatorMessage.data.result.message_id,
-          lastUserMessageId: null,
-          language: 'ru' // 🔥 Язык по умолчанию
+          lastUserMessageId: null
+        });
+
+        // 🔥 ДУБЛИРОВАНИЕ: Приветственное сообщение на русском и английском
+        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: chatId,
+          text: `👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.\n\n👋 Welcome to support! Just write your question and we will answer you as soon as possible.`
         });
       }
 
@@ -159,10 +129,10 @@ app.post("/webhook-support", async (req, res) => {
       dialog.lastUserMessageId = userMessage.data.result.message_id;
       userDialogs.set(userId, dialog);
 
-      // 🔥 ОТВЕТ НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ
+      // 🔥 ДУБЛИРОВАНИЕ: Подтверждение получения на русском и английском
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: messages[userLang].messageReceived
+        text: `✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.\n\n✅ Your message has been received. We will respond to you shortly.`
       });
       
     } catch (error) {
@@ -189,12 +159,10 @@ app.post("/webhook-support", async (req, res) => {
     
     if (targetUserId && targetDialog && adminReplyText) {
       try {
-        const userLang = getUserLanguage(targetUserId);
-        
-        // 🔥 ОТПРАВЛЯЕМ ОТВЕТ НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ
+        // 🔥 ДУБЛИРОВАНИЕ: Ответ поддержки на русском и английском
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: targetDialog.userChatId,
-          text: `${messages[userLang].supportResponse}:\n\n${adminReplyText}`
+          text: `💬 Ответ поддержки:\n\n${adminReplyText}\n\n💬 Support response:\n\n${adminReplyText}`
         });
 
         // Отправляем ответ в диалог
@@ -212,119 +180,34 @@ app.post("/webhook-support", async (req, res) => {
   }
 });
 
-// 🔥 ДОБАВЛЕНО: Функция получения языка пользователя
-function getUserLanguage(userId) {
-  const dialog = userDialogs.get(userId);
-  return dialog?.language || 'ru'; // Русский по умолчанию
-}
-
-// 🔥 ПЕРЕДЕЛАНО: Обработка команд для бота поддержки с мультиязычностью
+// 🔥 ПЕРЕДЕЛАНО: Обработка команд для бота поддержки
 async function handleSupportBotCommand(message) {
   const chatId = message.chat.id;
   const text = message.text;
-  const userId = message.from.id;
-  
-  const userLang = getUserLanguage(userId);
   
   try {
-    if (text === '/start' || text === '/start@' + (await getBotUsername())) {
+    if (text === '/start') {
+      // 🔥 ДУБЛИРОВАНИЕ: Приветственное сообщение на русском и английском
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: messages[userLang].welcome
+        text: `👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.\n\n👋 Welcome to support! Just write your question and we will answer you as soon as possible.`
       });
       
-    } else if (text === '/help' || text === '/help@' + (await getBotUsername())) {
+    } else if (text === '/help') {
+      // 🔥 ДУБЛИРОВАНИЕ: Помощь на русском и английском
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: messages[userLang].help
-      });
-      
-    } else if (text === '/english' || text === '/en') {
-      // 🔥 ПЕРЕКЛЮЧЕНИЕ НА АНГЛИЙСКИЙ
-      if (userDialogs.has(userId)) {
-        userDialogs.get(userId).language = 'en';
-      } else {
-        userDialogs.set(userId, { language: 'en', userChatId: chatId });
-      }
-      
-      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: chatId,
-        text: messages.en.languageChanged
-      });
-      
-    } else if (text === '/russian' || text === '/ru') {
-      // 🔥 ПЕРЕКЛЮЧЕНИЕ НА РУССКИЙ
-      if (userDialogs.has(userId)) {
-        userDialogs.get(userId).language = 'ru';
-      } else {
-        userDialogs.set(userId, { language: 'ru', userChatId: chatId });
-      }
-      
-      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: chatId,
-        text: messages.ru.languageChangedRU
-      });
-      
-    } else if (text === '/language' || text === '/lang') {
-      // 🔥 ТЕКУЩИЙ ЯЗЫК
-      const currentLang = getUserLanguage(userId);
-      const langText = currentLang === 'ru' ? 'Русский' : 'English';
-      
-      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: chatId,
-        text: `🌐 Текущий язык / Current language: ${langText}\n\nUse /english for English\nИспользуйте /russian для русского`
-      });
-      
-    } else {
-      // 🔥 НЕИЗВЕСТНАЯ КОМАНДА
-      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: chatId,
-        text: messages[userLang].unknownCommand
+        text: `ℹ️ Помощь / Help
+
+• Просто напишите ваш вопрос / Just write your question
+• Поддержка ответит вам в этом чате / Support will answer you in this chat
+• Для вопросов по оплате укажите ID транзакции / For payment issues include your transaction ID`
       });
     }
   } catch (error) {
     console.error('Error handling command:', error);
   }
 }
-
-// 🔥 ДОБАВЛЕНО: Функция для получения username бота
-async function getBotUsername() {
-  try {
-    const response = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
-    return response.data.result.username;
-  } catch (error) {
-    return 'support_bot';
-  }
-}
-
-// 🔥 ДОБАВЛЕНО: Установка вебхука для бота поддержки
-app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
-  try {
-    if (!SUPPORT_BOT_TOKEN) {
-      return res.status(400).json({
-        success: false,
-        error: 'SUPPORT_BOT_TOKEN not configured'
-      });
-    }
-    
-    const webhookUrl = `https://${req.get('host')}/webhook-support`;
-    
-    const response = await axios.get(
-      `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
-    );
-    
-    res.json({
-      success: true,
-      webhookUrl: webhookUrl,
-      telegramResponse: response.data
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.response?.data || error.message
-    });
-  }
-});
 
 // 🔥 ОБНОВЛЕННЫЙ корневой маршрут
 app.get("/", (req, res) => {
@@ -334,13 +217,6 @@ app.get("/", (req, res) => {
       multiLanguage: "✅ Enabled (Russian/English)",
       supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
       paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
-    },
-    commands: {
-      start: "/start - Welcome message",
-      help: "/help - Help information", 
-      english: "/english - Switch to English",
-      russian: "/russian - Switch to Russian",
-      language: "/language - Current language"
     }
   });
 });
@@ -891,8 +767,7 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
 // --- Старт сервера ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
-  console.log(`🤖 Multi-language support: ✅ ENABLED`);
+  console.log(`🤖 Multi-language support: ✅ ENABLED (Russian/English)`);
   console.log(`💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
   console.log(`💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
-  console.log(`🌐 Available commands: /start, /help, /english, /russian, /language`);
 });
