@@ -679,7 +679,69 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ВОССТАНОВЛЕНО: Локальный просмотр платежей
+// --- Файлы для заказов ---
+const purchasesFile = path.join(__dirname, "purchases.json");
+if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
+
+// 🔥 ИСПРАВЛЕНО: Функция для сохранения покупки в локальный файл
+function savePaymentToLocal(paymentData) {
+  try {
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
+    
+    if (existingIndex !== -1) {
+      // Обновляем существующую запись
+      purchases[existingIndex] = {
+        ...purchases[existingIndex],
+        ...paymentData,
+        timestamps: {
+          ...purchases[existingIndex].timestamps,
+          updatedAt: new Date()
+        }
+      };
+    } else {
+      // Добавляем новую запись с ВСЕМИ данными
+      const localPaymentData = {
+        transactionId: paymentData.transactionId,
+        paymentId: paymentData.paymentId,
+        status: paymentData.status || 'completed',
+        buyer: {
+          nickname: paymentData.buyer?.nickname || paymentData.nickname,
+          email: paymentData.buyer?.email || paymentData.payerEmail || 'unknown@email.com'
+        },
+        amount: {
+          total: paymentData.amount?.total || paymentData.amount,
+          currency: paymentData.amount?.currency || 'USD',
+          items: paymentData.amount?.items || paymentData.items?.reduce((sum, item) => sum + (item.price * item.qty), 0) || 0
+        },
+        // 🔥 ВАЖНО: Сохраняем items полностью
+        items: paymentData.items || [],
+        timestamps: {
+          createdAt: paymentData.timestamps?.createdAt || new Date(),
+          updatedAt: new Date()
+        },
+        delivery: {
+          delivered: paymentData.delivery?.delivered || false,
+          deliveredAt: paymentData.delivery?.deliveredAt || null
+        },
+        reviewLeft: paymentData.reviewLeft || false,
+        reviewName: paymentData.reviewName || null,
+        gameType: paymentData.gameType || 'unknown',
+        firebaseId: paymentData.firebaseId || null
+      };
+      purchases.push(localPaymentData);
+    }
+    
+    fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
+    console.log('✅ Payment saved to local file with items');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error saving to local file:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// 🔥 ОБНОВЛЕНО: Локальный просмотр платежей с items
 app.get("/local/payments", (req, res) => {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
@@ -696,6 +758,8 @@ app.get("/local/payments", (req, res) => {
             th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
             th { background-color: #4CAF50; color: white; }
             .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .items-list { font-size: 12px; margin-top: 5px; }
+            .item { padding: 2px 0; }
         </style>
     </head>
     <body>
@@ -711,6 +775,7 @@ app.get("/local/payments", (req, res) => {
                         <th>Transaction ID</th>
                         <th>Buyer</th>
                         <th>Amount</th>
+                        <th>Items</th>
                         <th>Date</th>
                         <th>Status</th>
                     </tr>
@@ -726,13 +791,34 @@ app.get("/local/payments", (req, res) => {
                         formattedDate = date.toLocaleString('ru-RU');
                       }
                       
+                      // 🔥 Форматируем items для отображения
+                      const itemsHtml = payment.items && payment.items.length > 0 
+                        ? payment.items.map(item => `
+                            <div class="item">
+                                ${item.name} x${item.quantity} 
+                                ${item.price ? `($${item.price})` : ''}
+                                ${item.subtotal ? `= $${item.subtotal}` : ''}
+                            </div>
+                        `).join('')
+                        : '<div class="item">No items data</div>';
+                      
                       return `
                     <tr>
                         <td><strong>${payment.transactionId}</strong></td>
-                        <td>${payment.buyer.nickname}</td>
-                        <td>$${payment.amount.total}</td>
+                        <td>
+                            <div><strong>${payment.buyer?.nickname || 'No name'}</strong></div>
+                            <small>${payment.buyer?.email || 'No email'}</small>
+                        </td>
+                        <td>
+                            <strong>$${payment.amount?.total || payment.amount || '0'}</strong>
+                        </td>
+                        <td>
+                            <div class="items-list">
+                                ${itemsHtml}
+                            </div>
+                        </td>
                         <td>${formattedDate}</td>
-                        <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
+                        <td>${payment.delivery?.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
                     </tr>
                     `}).join('')}
                 </tbody>
@@ -902,28 +988,7 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// --- Файлы для заказов ---
-const purchasesFile = path.join(__dirname, "purchases.json");
-if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
-
-// 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
-function savePaymentToLocal(paymentData) {
-  try {
-    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-    const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
-    if (existingIndex !== -1) {
-      purchases[existingIndex] = paymentData;
-    } else {
-      purchases.push(paymentData);
-    }
-    fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-// 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция сохранения платежа в Firebase
+// 🔥 ОБНОВЛЕНО: функция сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
   if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY || !db) {
     return { success: false, error: 'Firebase config missing' };
@@ -965,7 +1030,15 @@ async function savePaymentToFirebase(paymentData) {
     };
     
     await paymentRef.set(firebaseData);
-    const localSaveResult = savePaymentToLocal({ ...firebaseData, firebaseId: paymentRef.id });
+    
+    // 🔥 ПЕРЕДАЕМ ПОЛНЫЕ ДАННЫЕ В ЛОКАЛЬНОЕ СОХРАНЕНИЕ
+    const localSaveResult = savePaymentToLocal({
+      ...firebaseData,
+      firebaseId: paymentRef.id,
+      // 🔥 ДОБАВЛЯЕМ ОРИГИНАЛЬНЫЕ ITEMS ДЛЯ СОВМЕСТИМОСТИ
+      items: paymentData.items
+    });
+    
     return { success: true, paymentId: paymentRef.id, localSaved: localSaveResult.success };
   } catch (error) {
     return { success: false, error: error.message };
