@@ -19,9 +19,9 @@ const ADMIN_PASS = process.env.ADMIN_PASS || "avesatana";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
 // 🔥 ИСПРАВЛЕНО: Используем TELEGRAM_CHAT_ID вместо ADMIN_CHAT_ID
-const PAYPAL_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Твой текущий бот для платежей
-const SUPPORT_BOT_TOKEN = process.env.SUPPORT_BOT_TOKEN; // Новый бот для пересылки сообщений
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // Используем существующую переменную
+const PAYPAL_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const SUPPORT_BOT_TOKEN = process.env.SUPPORT_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const TELEGRAM_API_PAYPAL = `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}`;
 const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
@@ -29,45 +29,61 @@ const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с красивым оформлением
+// 🔥 ДОБАВЛЕНО: Мультиязычные сообщения
+const messages = {
+  ru: {
+    welcome: "👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.",
+    help: `ℹ️ Помощь
+
+• Просто напишите ваш вопрос
+• Поддержка ответит вам в этом чате  
+• Для вопросов по оплате укажите ID транзакции
+• Используйте /english для английской версии`,
+    messageReceived: "✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.",
+    supportResponse: "💬 Ответ поддержки",
+    languageChanged: "🌐 Язык изменен на английский. Используйте /russian для переключения обратно.",
+    languageChangedRU: "🌐 Язык изменен на русский. Используйте /english для переключения на английский.",
+    unknownCommand: "❌ Неизвестная команда. Используйте /help для списка команд."
+  },
+  en: {
+    welcome: "👋 Welcome to support! Just write your question and we will answer you as soon as possible.",
+    help: `ℹ️ Help
+
+• Just write your question
+• Support will answer you in this chat
+• For payment issues include your transaction ID
+• Use /russian for Russian version`,
+    messageReceived: "✅ Your message has been received. We will respond to you shortly.",
+    supportResponse: "💬 Support response",
+    languageChanged: "🌐 Language changed to English. Use /russian to switch back.",
+    languageChangedRU: "🌐 Language changed to Russian. Use /english to switch to English.",
+    unknownCommand: "❌ Unknown command. Use /help for command list."
+  }
+};
+
+// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с языковыми настройками
 let userDialogs = new Map();
 
 // ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
 
-// 🔧 ДИАГНОСТИКА: Проверка конфигурации поддержки
 app.get("/api/check-support-config", (req, res) => {
   const config = {
-    SUPPORT_BOT_TOKEN: SUPPORT_BOT_TOKEN ? 
-      `✅ SET (${SUPPORT_BOT_TOKEN.substring(0, 10)}...)` : '❌ NOT SET',
-    TELEGRAM_CHAT_ID: TELEGRAM_CHAT_ID ? 
-      `✅ SET (${TELEGRAM_CHAT_ID})` : '❌ NOT SET',
-    PAYPAL_BOT_TOKEN: PAYPAL_BOT_TOKEN ? 
-      '✅ SET' : '❌ NOT SET',
-    serverUrl: `https://${req.get('host')}`,
-    webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
+    SUPPORT_BOT_TOKEN: SUPPORT_BOT_TOKEN ? `✅ SET` : '❌ NOT SET',
+    TELEGRAM_CHAT_ID: TELEGRAM_CHAT_ID ? `✅ SET` : '❌ NOT SET',
     userDialogsSize: userDialogs.size
   };
-  
-  console.log('🔧 Support Bot Configuration Check:', config);
   res.json(config);
 });
 
-// 🔧 ДИАГНОСТИКА: Тест отправки сообщения от бота поддержки
 app.get("/api/test-support-bot-message", async (req, res) => {
   try {
-    if (!SUPPORT_BOT_TOKEN) {
-      return res.json({ success: false, error: "SUPPORT_BOT_TOKEN not set" });
-    }
-    if (!TELEGRAM_CHAT_ID) {
-      return res.json({ success: false, error: "TELEGRAM_CHAT_ID not set" });
+    if (!SUPPORT_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      return res.json({ success: false, error: "Tokens not set" });
     }
 
-    console.log('🧪 Testing support bot message sending...');
-    
     const testMessage = {
       chat_id: TELEGRAM_CHAT_ID,
-      text: '🧪 <b>Тестовое сообщение от Support Bot</b>\n\nЕсли ты видишь это, значит бот может отправлять тебе сообщения! ✅',
-      parse_mode: 'HTML'
+      text: '🧪 Test message from Support Bot',
     };
 
     const response = await axios.post(
@@ -75,96 +91,64 @@ app.get("/api/test-support-bot-message", async (req, res) => {
       testMessage
     );
 
-    console.log('✅ Test message sent successfully:', response.data);
-    
-    res.json({
-      success: true,
-      message: 'Test message sent to you successfully!',
-      telegramResponse: response.data
-    });
-
+    res.json({ success: true, message: 'Test message sent!' });
   } catch (error) {
-    console.error('❌ Test message failed:', error.response?.data || error.message);
-    res.json({
-      success: false,
-      error: error.response?.data || error.message
-    });
+    res.json({ success: false, error: error.response?.data || error.message });
   }
-});
-
-// 🔧 ДИАГНОСТИКА: Полная информация о сервере
-app.get("/api/debug-support", (req, res) => {
-  res.json({
-    supportBotToken: SUPPORT_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
-    telegramChatId: TELEGRAM_CHAT_ID ? "✅ SET: " + TELEGRAM_CHAT_ID : "❌ MISSING",
-    paypalBotToken: PAYPAL_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
-    webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
-    userDialogsSize: userDialogs.size,
-    environment: {
-      NODE_ENV: process.env.NODE_ENV || 'not set',
-      RENDER: process.env.RENDER ? '✅' : '❌'
-    }
-  });
 });
 
 // ==================== ПЕРЕДЕЛАННЫЙ ВЕБХУК ПОДДЕРЖКИ ====================
 
-// 🔥 ПЕРЕДЕЛАНО: ВЕБХУК ДЛЯ ВТОРОГО БОТА (ПОДДЕРЖКА) С РАЗДЕЛЕННЫМИ ДИАЛОГАМИ
 app.post("/webhook-support", async (req, res) => {
-  console.log('💬 ===== SUPPORT BOT WEBHOOK CALLED =====');
+  console.log('💬 SUPPORT BOT WEBHOOK CALLED');
   
   const update = req.body;
-  
-  // Важно сразу ответить Telegram
   res.send('OK');
 
-  if (!SUPPORT_BOT_TOKEN) {
-    console.error('❌ SUPPORT_BOT_TOKEN not configured!');
+  if (!SUPPORT_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.error('❌ Tokens not configured!');
     return;
   }
 
-  if (!TELEGRAM_CHAT_ID) {
-    console.error('❌ TELEGRAM_CHAT_ID not configured!');
-    return;
-  }
-
-  // Обработка сообщений от пользователей поддержке
+  // Обработка сообщений от пользователей
   if (update.message && !update.message.reply_to_message) {
     const chatId = update.message.chat.id;
-    const text = update.message.text || '(медиа-сообщение)';
+    const text = update.message.text || '(media message)';
     const userName = update.message.from.first_name + (update.message.from.last_name ? ' ' + update.message.from.last_name : '');
     const userId = update.message.from.id;
-    const username = update.message.from.username ? `@${update.message.from.username}` : 'нет username';
     
-    console.log(`💬 New message from ${userName} (ID: ${userId}): "${text}"`);
+    console.log(`💬 Message from ${userName} (${userId}): "${text}"`);
     
     try {
-      // Проверяем, новый ли это пользователь
+      // 🔥 ОБРАБОТКА КОМАНД
+      if (text.startsWith('/')) {
+        await handleSupportBotCommand(update.message);
+        return;
+      }
+
+      // 🔥 ПРОВЕРЯЕМ ЯЗЫК ПОЛЬЗОВАТЕЛЯ
+      const userLang = getUserLanguage(userId);
+
+      // Новый пользователь
       if (!userDialogs.has(userId)) {
-        // 🔥 НОВЫЙ ДИАЛОГ - создаем разделитель
         const separatorMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
           text: `───────────────\n💎 ДИАЛОГ С ${userName.toUpperCase()}\n🆔 ${userId}\n────────────────────`,
-          parse_mode: 'HTML'
         });
 
-        // Сохраняем информацию о диалоге
         userDialogs.set(userId, {
           userChatId: chatId,
           userName: userName,
-          username: username,
           started: new Date(),
           separatorMessageId: separatorMessage.data.result.message_id,
-          lastUserMessageId: null
+          lastUserMessageId: null,
+          language: 'ru' // 🔥 Язык по умолчанию
         });
-
-        console.log(`🆕 New dialog created for ${userName} (ID: ${userId})`);
       }
 
-      // Получаем данные диалога
       const dialog = userDialogs.get(userId);
       
-      // 🔥 Отправляем сообщение пользователя под разделителем
+      // Отправляем сообщение пользователя
       const userMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
         text: `<b>${userName}:</b> ${text}`,
@@ -172,38 +156,31 @@ app.post("/webhook-support", async (req, res) => {
         reply_to_message_id: dialog.separatorMessageId
       });
 
-      // Обновляем последнее сообщение пользователя
       dialog.lastUserMessageId = userMessage.data.result.message_id;
       userDialogs.set(userId, dialog);
 
-      // Подтверждаем получение пользователю
+      // 🔥 ОТВЕТ НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: '✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.'
+        text: messages[userLang].messageReceived
       });
       
-      console.log(`✅ Message from ${userName} forwarded to admin`);
-
     } catch (error) {
-      console.error('❌ Error processing user message:');
-      console.error('🔧 Error details:', error.response?.data || error.message);
+      console.error('❌ Error:', error.response?.data || error.message);
     }
   }
   
-  // 🔥 ПЕРЕДЕЛАНО: Обработка ответов админа (реплаев)
+  // 🔥 ОБРАБОТКА ОТВЕТОВ АДМИНА
   if (update.message && update.message.reply_to_message && update.message.chat.id.toString() === TELEGRAM_CHAT_ID.toString()) {
     const adminReplyText = update.message.text;
     const repliedMessageId = update.message.reply_to_message.message_id;
     
-    console.log(`🔁 Admin reply detected: "${adminReplyText}" to message ${repliedMessageId}`);
-    
-    // Ищем пользователя по message_id реплая
+    // Ищем пользователя
     let targetUserId = null;
     let targetDialog = null;
     
     for (let [userId, dialog] of userDialogs.entries()) {
-      if (dialog.lastUserMessageId === repliedMessageId || 
-          dialog.separatorMessageId === repliedMessageId) {
+      if (dialog.lastUserMessageId === repliedMessageId || dialog.separatorMessageId === repliedMessageId) {
         targetUserId = userId;
         targetDialog = dialog;
         break;
@@ -211,17 +188,16 @@ app.post("/webhook-support", async (req, res) => {
     }
     
     if (targetUserId && targetDialog && adminReplyText) {
-      console.log(`📨 Sending reply to user ${targetDialog.userName} (${targetUserId})`);
-      
       try {
-        // Отправляем ответ пользователю
+        const userLang = getUserLanguage(targetUserId);
+        
+        // 🔥 ОТПРАВЛЯЕМ ОТВЕТ НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: targetDialog.userChatId,
-          text: `💬 <b>Ответ поддержки:</b>\n${adminReplyText}`,
-          parse_mode: 'HTML'
+          text: `${messages[userLang].supportResponse}:\n\n${adminReplyText}`
         });
-        
-        // 🔥 Отправляем ответ в диалог под разделителем
+
+        // Отправляем ответ в диалог
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
           text: `<b>Поддержка:</b> ${adminReplyText}`,
@@ -229,106 +205,97 @@ app.post("/webhook-support", async (req, res) => {
           reply_to_message_id: targetDialog.separatorMessageId
         });
         
-        console.log(`✅ Reply sent to user ${targetDialog.userName}`);
       } catch (error) {
-        console.error('❌ Error sending reply to user:', error.response?.data || error.message);
-        
-        // Если не удалось отправить (пользователь заблокировал бота и т.д.)
-        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-          chat_id: TELEGRAM_CHAT_ID,
-          text: '❌ <b>Не удалось отправить ответ пользователю.</b>\nВозможно, пользователь заблокировал бота.',
-          parse_mode: 'HTML'
-        });
+        console.error('❌ Error sending reply:', error.response?.data || error.message);
       }
-    } else {
-      console.log('❌ No dialog found for reply or no reply text');
     }
   }
-
-  // Обработка команд боту поддержки
-  if (update.message && update.message.text && update.message.text.startsWith('/')) {
-    await handleSupportBotCommand(update.message);
-  }
-
-  console.log('💬 ===== WEBHOOK PROCESSING COMPLETE =====');
 });
 
-// 🔥 ДОБАВЛЕНО: Функция для получения username бота
-async function getBotUsername(botToken) {
-  try {
-    const response = await axios.get(`https://api.telegram.org/bot${botToken}/getMe`);
-    return response.data.result.username;
-  } catch (error) {
-    console.error('Error getting bot username:', error);
-    return 'support_bot';
-  }
+// 🔥 ДОБАВЛЕНО: Функция получения языка пользователя
+function getUserLanguage(userId) {
+  const dialog = userDialogs.get(userId);
+  return dialog?.language || 'ru'; // Русский по умолчанию
 }
 
-// 🔥 ДОБАВЛЕНО: Обработка команд для бота поддержки
+// 🔥 ПЕРЕДЕЛАНО: Обработка команд для бота поддержки с мультиязычностью
 async function handleSupportBotCommand(message) {
   const chatId = message.chat.id;
   const text = message.text;
+  const userId = message.from.id;
+  
+  const userLang = getUserLanguage(userId);
   
   try {
-    if (text === '/start') {
+    if (text === '/start' || text === '/start@' + (await getBotUsername())) {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `👋 <b>Добро пожаловать в поддержку!</b>\n\nПросто напишите ваш вопрос, и мы ответим вам в ближайшее время.`,
-        parse_mode: 'HTML'
+        text: messages[userLang].welcome
       });
-    } else if (text === '/help') {
+      
+    } else if (text === '/help' || text === '/help@' + (await getBotUsername())) {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `ℹ️ <b>Помощь</b>\n\n• Просто напишите ваш вопрос\n• Поддержка ответит вам в этом чате\n• Для вопросов по оплате укажите ID транзакции`,
-        parse_mode: 'HTML'
+        text: messages[userLang].help
       });
-    } else if (text === '/stats' && chatId.toString() === TELEGRAM_CHAT_ID.toString()) {
-      // Статистика для админа
-      const activeDialogs = Array.from(userDialogs.entries()).filter(([_, dialog]) => 
-        Date.now() - new Date(dialog.started).getTime() < 24 * 60 * 60 * 1000
-      ).length;
+      
+    } else if (text === '/english' || text === '/en') {
+      // 🔥 ПЕРЕКЛЮЧЕНИЕ НА АНГЛИЙСКИЙ
+      if (userDialogs.has(userId)) {
+        userDialogs.get(userId).language = 'en';
+      } else {
+        userDialogs.set(userId, { language: 'en', userChatId: chatId });
+      }
       
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `📊 <b>Статистика поддержки</b>\n\n• Активных диалогов: ${activeDialogs}\n• Всего диалогов: ${userDialogs.size}\n• Время сервера: ${new Date().toLocaleString('ru-RU')}`,
-        parse_mode: 'HTML'
+        chat_id: chatId,
+        text: messages.en.languageChanged
+      });
+      
+    } else if (text === '/russian' || text === '/ru') {
+      // 🔥 ПЕРЕКЛЮЧЕНИЕ НА РУССКИЙ
+      if (userDialogs.has(userId)) {
+        userDialogs.get(userId).language = 'ru';
+      } else {
+        userDialogs.set(userId, { language: 'ru', userChatId: chatId });
+      }
+      
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: messages.ru.languageChangedRU
+      });
+      
+    } else if (text === '/language' || text === '/lang') {
+      // 🔥 ТЕКУЩИЙ ЯЗЫК
+      const currentLang = getUserLanguage(userId);
+      const langText = currentLang === 'ru' ? 'Русский' : 'English';
+      
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: `🌐 Текущий язык / Current language: ${langText}\n\nUse /english for English\nИспользуйте /russian для русского`
+      });
+      
+    } else {
+      // 🔥 НЕИЗВЕСТНАЯ КОМАНДА
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: messages[userLang].unknownCommand
       });
     }
   } catch (error) {
-    console.error('Error handling support bot command:', error);
+    console.error('Error handling command:', error);
   }
 }
 
-// 🔥 ДОБАВЛЕНО: Тестовый маршрут для поддержки
-app.get("/api/test-support-bot", async (req, res) => {
+// 🔥 ДОБАВЛЕНО: Функция для получения username бота
+async function getBotUsername() {
   try {
-    if (!SUPPORT_BOT_TOKEN) {
-      return res.json({ 
-        success: false, 
-        message: '❌ SUPPORT_BOT_TOKEN not configured' 
-      });
-    }
-    
-    // Проверяем, что бот работает
-    const botInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
-    
-    // Проверяем вебхук
-    const webhookInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getWebhookInfo`);
-    
-    res.json({
-      success: true,
-      bot: botInfo.data.result,
-      webhook: webhookInfo.data.result,
-      message: '✅ Support bot is configured correctly'
-    });
+    const response = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
+    return response.data.result.username;
   } catch (error) {
-    res.json({
-      success: false,
-      error: error.response?.data || error.message,
-      message: '❌ Support bot configuration error'
-    });
+    return 'support_bot';
   }
-});
+}
 
 // 🔥 ДОБАВЛЕНО: Установка вебхука для бота поддержки
 app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
@@ -336,7 +303,7 @@ app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
     if (!SUPPORT_BOT_TOKEN) {
       return res.status(400).json({
         success: false,
-        error: 'SUPPORT_BOT_TOKEN not configured in environment variables'
+        error: 'SUPPORT_BOT_TOKEN not configured'
       });
     }
     
@@ -346,15 +313,12 @@ app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
       `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
     );
     
-    console.log('✅ Support bot webhook setup response:', response.data);
-    
     res.json({
       success: true,
       webhookUrl: webhookUrl,
       telegramResponse: response.data
     });
   } catch (error) {
-    console.error('❌ Error setting up support webhook:', error);
     res.status(500).json({
       success: false,
       error: error.response?.data || error.message
@@ -362,46 +326,31 @@ app.post("/api/setup-support-webhook", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 ОБНОВЛЕННЫЙ корневой маршрут с информацией о двух ботах
+// 🔥 ОБНОВЛЕННЫЙ корневой маршрут
 app.get("/", (req, res) => {
   res.json({
     message: "PayPal Server is running!",
-    bots: {
-      paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
-      supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
+    features: {
+      multiLanguage: "✅ Enabled (Russian/English)",
+      supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
+      paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
     },
-    diagnosticEndpoints: {
-      checkConfig: "/api/check-support-config",
-      testMessage: "/api/test-support-bot-message", 
-      debugInfo: "/api/debug-support",
-      testBot: "/api/test-support-bot"
-    },
-    endpoints: {
-      test: "/api/test-firebase",
-      setupSupportWebhook: "/api/setup-support-webhook (POST, requires auth)",
-      adminPayments: "/admin/payments (requires login)",
-      adminReviews: "/admin/reviews (requires login)", 
-      localPayments: "/local/payments (backup view)",
-      webhook: "/webhook (for PayPal bot)",
-      webhookSupport: "/webhook-support (for Support bot)",
-      login: "/api/login",
-      testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)"
-    },
-    status: "active",
-    timestamp: new Date().toISOString()
+    commands: {
+      start: "/start - Welcome message",
+      help: "/help - Help information", 
+      english: "/english - Switch to English",
+      russian: "/russian - Switch to Russian",
+      language: "/language - Current language"
+    }
   });
 });
 
-// ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
+// ========== ОСТАЛЬНОЙ КОД ==========
 
 // 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
 async function saveReviewToFirestore(reviewData) {
   try {
-    console.log('💾 Saving review to Firestore...');
-    
     const reviewRef = db.collection('reviews').doc();
-    
     const firestoreReview = {
       name: reviewData.name,
       review: reviewData.review,
@@ -409,72 +358,42 @@ async function saveReviewToFirestore(reviewData) {
       createdAt: new Date(),
       visible: true
     };
-    
     await reviewRef.set(firestoreReview);
-    console.log('✅ Review saved to Firestore with ID:', reviewRef.id);
-    
     return { success: true, reviewId: reviewRef.id };
   } catch (error) {
-    console.error('❌ Error saving review to Firestore:', error);
     return { success: false, error: error.message };
   }
 }
 
 async function getReviewsFromFirestore() {
   try {
-    console.log('📖 Getting reviews from Firestore...');
-    
     const reviewsRef = db.collection('reviews');
     const snapshot = await reviewsRef.where('visible', '==', true).orderBy('createdAt', 'desc').get();
-    
     const reviews = [];
     snapshot.forEach(doc => {
-      reviews.push({
-        id: doc.id,
-        ...doc.data()
-      });
+      reviews.push({ id: doc.id, ...doc.data() });
     });
-    
-    console.log(`✅ Found ${reviews.length} reviews in Firestore`);
     return { success: true, reviews };
   } catch (error) {
-    console.error('❌ Error getting reviews from Firestore:', error);
     return { success: false, error: error.message, reviews: [] };
   }
 }
 
 async function deleteReviewFromFirestore(reviewId) {
   try {
-    console.log('🗑️ Deleting review from Firestore:', reviewId);
-    
     const reviewRef = db.collection('reviews').doc(reviewId);
     await reviewRef.update({ visible: false });
-    
-    console.log('✅ Review marked as hidden in Firestore');
     return { success: true };
   } catch (error) {
-    console.error('❌ Error deleting review from Firestore:', error);
     return { success: false, error: error.message };
   }
 }
-
-// 🔧 ДОБАВЛЕНО: Диагностика Firebase при старте
-console.log('=== FIREBASE DEBUG INFO ===');
-console.log('FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? 'SET' : 'NOT SET');
-console.log('FIREBASE_CLIENT_EMAIL:', process.env.FIREBASE_CLIENT_EMAIL ? 'SET' : 'NOT SET');
-console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'SET (' + process.env.FIREBASE_PRIVATE_KEY.length + ' chars)' : 'NOT SET');
-console.log('db object:', db ? 'EXISTS' : 'NULL');
-console.log('==========================');
 
 // 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: Для бэкапа в Google Sheets
 async function backupToGoogleSheets(paymentData) {
   try {
     const googleWebhookURL = 'https://script.google.com/macros/s/AKfycbxhYagfBjtQG81iwWDewT4Q4rQ1JDBnMHCRrvyyisKZ2wGe6yYEa-6YATXloLNyf96a/exec';
     
-    console.log('📤 Sending to Google Sheets...');
-    console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
-
-    // 🔥 ФОРМАТ ДАННЫХ ДЛЯ НОВОГО GOOGLE APPS SCRIPT
     const sheetsData = {
       transactionId: paymentData.transactionId || 'N/A',
       nickname: paymentData.nickname || 'No nickname',
@@ -484,47 +403,27 @@ async function backupToGoogleSheets(paymentData) {
       gameType: paymentData.gameType || 'unknown'
     };
 
-    console.log('📨 Data for Google Sheets:', JSON.stringify(sheetsData, null, 2));
-
     const response = await fetch(googleWebhookURL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sheetsData)
     });
 
-    console.log('📞 Google Sheets response status:', response.status);
-    
     const responseText = await response.text();
-    console.log('📄 Google Sheets response text:', responseText);
-
     let result;
     try {
       result = JSON.parse(responseText);
     } catch (parseError) {
-      console.log('⚠️ Google Sheets returned non-JSON response:', responseText);
-      result = { success: false, error: 'Invalid JSON response', response: responseText };
-    }
-
-    console.log('✅ Google Sheets backup result:', result.success ? 'SUCCESS' : 'FAILED');
-    
-    if (!result.success) {
-      console.error('❌ Google Sheets error:', result.error);
-    } else {
-      console.log('🎉 Google Sheets backup completed successfully');
+      result = { success: false, error: 'Invalid JSON response' };
     }
 
     return result;
-    
   } catch (error) {
-    console.error('❌ Google Sheets backup failed:', error.message);
-    console.error('🔍 Error details:', error.stack);
     return { success: false, error: error.message };
   }
 }
 
-// --- УЛУЧШЕННЫЙ Middleware для JWT ---
+// --- Middleware для JWT ---
 function authMiddleware(req, res, next) {
   const tokenFromUrl = req.query.token;
   const authHeader = req.headers["authorization"];
@@ -593,127 +492,79 @@ function authMiddleware(req, res, next) {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ 
-        success: false, 
-        error: "Invalid or expired token",
-        message: "Please login again at /admin/payments" 
-      });
+      return res.status(403).json({ success: false, error: "Invalid or expired token" });
     }
     req.user = user;
     next();
   });
 }
 
-// --- Файлы для заказов/отзывов ---
+// --- Файлы для заказов ---
 const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
-
-// 🔥 ИЗМЕНЕНО: Убираем локальный файл для отзывов, так как теперь используем Firestore
-const reviewsFile = path.join(__dirname, "reviews.json");
-// Файл оставляем для обратной совместимости, но основной источник - Firestore
 
 // 🔥 ДОБАВЛЕНО: Функция для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-    
-    // Проверяем, нет ли уже такой транзакции
     const existingIndex = purchases.findIndex(p => p.transactionId === paymentData.transactionId);
-    
     if (existingIndex !== -1) {
-      // Обновляем существующую запись
       purchases[existingIndex] = paymentData;
     } else {
-      // Добавляем новую запись
       purchases.push(paymentData);
     }
-    
     fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
-    console.log('✅ Payment saved to local file');
     return { success: true };
   } catch (error) {
-    console.error('❌ Error saving to local file:', error);
     return { success: false, error: error.message };
   }
 }
 
 // 🔥 ДОБАВЛЕНО: УЛУЧШЕННАЯ функция сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
-  console.log('🔄 Attempting to save to Firebase...');
-  
-  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY) {
-    console.error('❌ Firebase environment variables are missing!');
+  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY || !db) {
     return { success: false, error: 'Firebase config missing' };
-  }
-  
-  if (!db) {
-    console.error('❌ Firebase db object is not initialized!');
-    return { success: false, error: 'Firebase not initialized' };
   }
   
   try {
     const paymentRef = db.collection('payments').doc();
-    
     const firebaseData = {
       transactionId: paymentData.transactionId,
       paymentId: paymentData.paymentId,
       status: paymentData.status || 'completed',
-      
-      buyer: {
-        nickname: paymentData.nickname,
-        email: paymentData.payerEmail || 'unknown@email.com'
+      buyer: { 
+        nickname: paymentData.nickname, 
+        email: paymentData.payerEmail || 'unknown@email.com' 
       },
-      
-      amount: {
-        total: paymentData.amount,
-        currency: paymentData.currency || 'USD',
-        items: paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0)
+      amount: { 
+        total: paymentData.amount, 
+        currency: paymentData.currency || 'USD', 
+        items: paymentData.items.reduce((sum, item) => sum + (item.price * item.qty), 0) 
       },
-      
-      items: paymentData.items.map((item, index) => ({
-        id: index + 1,
-        name: item.name,
-        quantity: item.qty,
-        price: item.price,
-        subtotal: (item.price * item.qty).toFixed(2)
+      items: paymentData.items.map((item, index) => ({ 
+        id: index + 1, 
+        name: item.name, 
+        quantity: item.qty, 
+        price: item.price, 
+        subtotal: (item.price * item.qty).toFixed(2) 
       })),
-      
-      timestamps: {
-        createdAt: new Date(),
-        updatedAt: new Date()
+      timestamps: { 
+        createdAt: new Date(), 
+        updatedAt: new Date() 
       },
-      
-      delivery: {
-        delivered: false,
-        deliveredAt: null
+      delivery: { 
+        delivered: false, 
+        deliveredAt: null 
       },
-
-      // 🔥 ДОБАВЛЕНО: Поле для отслеживания оставленных отзывов
-      reviewLeft: false,
+      reviewLeft: false, 
       reviewName: null,
-
-      // 🔥 ДОБАВЛЕНО: Поле для типа игры
       gameType: paymentData.gameType || 'unknown'
     };
     
     await paymentRef.set(firebaseData);
-    
-    console.log('✅ Successfully saved to Firebase, ID:', paymentRef.id);
-    
-    // 🔥 ДОБАВЛЕНО: Сохраняем также в локальный файл
-    const localSaveResult = savePaymentToLocal({
-      ...firebaseData,
-      firebaseId: paymentRef.id  // Сохраняем ID из Firebase для связи
-    });
-    
-    return { 
-      success: true, 
-      paymentId: paymentRef.id,
-      localSaved: localSaveResult.success
-    };
+    const localSaveResult = savePaymentToLocal({ ...firebaseData, firebaseId: paymentRef.id });
+    return { success: true, paymentId: paymentRef.id, localSaved: localSaveResult.success };
   } catch (error) {
-    console.error('❌ Firebase save error:', error);
-    console.error('❌ Error details:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -721,92 +572,49 @@ async function savePaymentToFirebase(paymentData) {
 // 🔥 ДОБАВЛЕНО: Функции очистки данных
 app.post("/api/clear-purchases", authMiddleware, async (req, res) => {
   try {
-    const { type } = req.body; // 'local', 'firebase', 'all'
+    const { type } = req.body;
     
     let result = { success: true, messages: [] };
 
-    // Очистка локальных данных
     if (type === 'local' || type === 'all') {
       fs.writeFileSync(purchasesFile, "[]", "utf-8");
       result.messages.push("✅ Local purchases cleared");
     }
 
-    // Очистка Firebase
     if (type === 'firebase' || type === 'all') {
       if (db) {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.get();
-        
         const deletePromises = [];
         snapshot.forEach(doc => {
           deletePromises.push(doc.ref.delete());
         });
-        
         await Promise.all(deletePromises);
         result.messages.push(`✅ Firebase cleared (${deletePromises.length} documents)`);
-      } else {
-        result.messages.push("❌ Firebase not available");
       }
     }
 
-    console.log(`🧹 Data cleared: ${type}`);
     res.json(result);
-    
   } catch (error) {
-    console.error('❌ Error clearing data:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to clear data: ' + error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to clear data' });
   }
 });
 
 app.post("/api/clear-reviews", authMiddleware, async (req, res) => {
   try {
-    // 🔥 ИЗМЕНЕНО: Очищаем отзывы из Firestore вместо локального файла
     if (db) {
       const reviewsRef = db.collection('reviews');
       const snapshot = await reviewsRef.get();
-      
       const deletePromises = [];
       snapshot.forEach(doc => {
         deletePromises.push(doc.ref.delete());
       });
-      
       await Promise.all(deletePromises);
-      console.log(`✅ Firestore reviews cleared (${deletePromises.length} documents)`);
     }
     
-    // 🔥 ДОБАВЛЕНО: Также сбрасываем флаги отзывов в Firebase
-    if (db) {
-      const paymentsRef = db.collection('payments');
-      const snapshot = await paymentsRef.get();
-      
-      const updatePromises = [];
-      snapshot.forEach(doc => {
-        updatePromises.push(
-          doc.ref.update({
-            reviewLeft: false,
-            reviewName: null
-          })
-        );
-      });
-      
-      await Promise.all(updatePromises);
-      console.log(`✅ Reset review flags for ${updatePromises.length} payments`);
-    }
-    
-    console.log('🧹 Reviews cleared from Firestore');
-    res.json({ 
-      success: true, 
-      message: "All reviews cleared successfully from Firestore" 
-    });
+    res.json({ success: true, message: "All reviews cleared successfully" });
   } catch (error) {
-    console.error('❌ Error clearing reviews:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to clear reviews: ' + error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to clear reviews' });
   }
 });
 
@@ -817,14 +625,9 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       localPurchases: 0,
       firebasePurchases: 0,
       reviews: 0,
-      gameStats: {
-        poe2: 0,
-        poe1: 0,
-        unknown: 0
-      }
+      gameStats: { poe2: 0, poe1: 0, unknown: 0 }
     };
 
-    // Локальные покупки
     try {
       const localData = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
       stats.localPurchases = localData.length;
@@ -832,30 +635,23 @@ app.get("/api/stats", authMiddleware, async (req, res) => {
       stats.localPurchases = 0;
     }
 
-    // Firebase покупки и статистика по играм
     if (db) {
       try {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.get();
         stats.firebasePurchases = snapshot.size;
         
-        // 🔥 ДОБАВЛЕНО: Статистика по играм
         snapshot.forEach(doc => {
           const data = doc.data();
           const gameType = data.gameType || 'unknown';
           if (stats.gameStats[gameType] !== undefined) {
             stats.gameStats[gameType]++;
-          } else {
-            stats.gameStats.unknown++;
           }
         });
       } catch (e) {
         stats.firebasePurchases = 0;
       }
-    }
 
-    // 🔥 ИЗМЕНЕНО: Отзывы из Firestore
-    if (db) {
       try {
         const reviewsRef = db.collection('reviews');
         const snapshot = await reviewsRef.where('visible', '==', true).get();
@@ -876,32 +672,22 @@ app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USER && password === ADMIN_PASS) {
     const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: "2h" });
-    return res.json({ 
-      success: true,
-      token: token,
-      message: "Login successful"
-    });
+    return res.json({ success: true, token: token, message: "Login successful" });
   }
-  res.status(401).json({ 
-    success: false,
-    error: "Invalid credentials" 
-  });
+  res.status(401).json({ success: false, error: "Invalid credentials" });
 });
 
-// 🔥 ОБНОВЛЕННЫЙ WEBHOOK С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ
+// 🔥 ОБНОВЛЕННЫЙ WEBHOOK
 app.post("/webhook", async (req, res) => {
   const details = req.body;
   const nickname = details.nickname || "No nickname";
   const gameType = details.gameType || 'unknown';
 
-  console.log('💰 ===== NEW PAYMENT WEBHOOK =====');
+  console.log('💰 NEW PAYMENT WEBHOOK');
   console.log('🎮 Game Type:', gameType);
   console.log('👤 Nickname:', nickname);
-  console.log('💳 Transaction ID:', details.transactionId);
-  console.log('💰 Amount:', details.amount);
-  console.log('📦 Items:', JSON.stringify(details.items, null, 2));
 
-  // 🔥 ДОБАВЛЕНО: Сохраняем платеж в Firebase
+  // Сохраняем платеж в Firebase
   try {
     const paymentData = {
       amount: details.amount,
@@ -915,21 +701,16 @@ app.post("/webhook", async (req, res) => {
       gameType: gameType
     };
     
-    console.log('🔥 Saving to Firebase...');
     const firebaseResult = await savePaymentToFirebase(paymentData);
-    
     if (!firebaseResult.success) {
       console.error('❌ Firebase save error:', firebaseResult.error);
-    } else {
-      console.log('✅ Payment saved to Firebase successfully, ID:', firebaseResult.paymentId);
     }
   } catch (firebaseError) {
     console.error('❌ Firebase processing error:', firebaseError);
   }
 
-  // 🔥 ДОБАВЛЕНО: Отправляем в Google Sheets СРАЗУ ПОСЛЕ Firebase
+  // Отправляем в Google Sheets
   try {
-    console.log('📤 Sending to Google Sheets...');
     const googleSheetsResult = await backupToGoogleSheets({
       transactionId: details.transactionId,
       nickname: nickname,
@@ -941,158 +722,28 @@ app.post("/webhook", async (req, res) => {
     
     if (!googleSheetsResult.success) {
       console.error('❌ Google Sheets save error:', googleSheetsResult.error);
-    } else {
-      console.log('✅ Payment saved to Google Sheets successfully');
     }
   } catch (googleSheetsError) {
     console.error('❌ Google Sheets processing error:', googleSheetsError);
   }
 
-  // 🔥 TELEGRAM УВЕДОМЛЕНИЕ
+  // TELEGRAM УВЕДОМЛЕНИЕ
   if (PAYPAL_BOT_TOKEN && TELEGRAM_CHAT_ID) {
     try {
       const itemsText = details.items.map(i => `${i.name} x${i.qty} ($${i.price})`).join("\n");
-      
-      await axios.post(
-        `https://api.telegram.org/bot${PAYPAL_BOT_TOKEN}/sendMessage`,
-        {
-          chat_id: TELEGRAM_CHAT_ID,
-          text: `💰 New purchase (${gameType}):
-Transaction: ${details.transactionId}
-Buyer: ${nickname}
-Amount: $${details.amount}
-Items:
-${itemsText}`
-        }
-      );
-      console.log('✅ Telegram notification sent');
+      await axios.post(`${TELEGRAM_API_PAYPAL}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: `💰 New purchase (${gameType}):\nTransaction: ${details.transactionId}\nBuyer: ${nickname}\nAmount: $${details.amount}\nItems:\n${itemsText}`
+      });
     } catch (err) {
       console.error("❌ Telegram error:", err.message);
     }
   }
 
-  console.log('✅ ===== WEBHOOK PROCESSING COMPLETE =====');
   res.status(200).send("OK");
 });
 
-// 🔧 ДОБАВЛЕНО: Тестовый маршрут для проверки Firebase
-app.get("/api/test-firebase", async (req, res) => {
-  try {
-    console.log('🧪 Testing Firebase connection...');
-    
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: '❌ Firebase db object is not initialized' 
-      });
-    }
-    
-    const testRef = db.collection('test').doc('connection-test');
-    await testRef.set({ 
-      message: 'Тест соединения с Firebase',
-      timestamp: new Date(),
-      server: 'PayPal Server'
-    });
-    
-    console.log('✅ Firebase test document created');
-    res.json({ 
-      success: true, 
-      message: '✅ Firebase подключен и работает! Проверьте базу данных.' 
-    });
-  } catch (error) {
-    console.error('❌ Firebase test error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: '❌ Ошибка Firebase: ' + error.message 
-    });
-  }
-});
-
-// 🔧 ДОБАВЛЕНО: Тестовый маршрут для создания платежа
-app.post("/api/test-firebase-payment", async (req, res) => {
-  try {
-    console.log('🧪 Testing Firebase payment creation...');
-    
-    const testPaymentData = {
-      amount: 10.99,
-      currency: 'USD',
-      payerEmail: 'test@example.com',
-      paymentId: 'test-payment-' + Date.now(),
-      status: 'completed',
-      nickname: 'Test User',
-      items: [{ name: 'Test Product', qty: 1, price: 10.99 }],
-      transactionId: 'test-txn-' + Date.now(),
-      gameType: 'poe2' // 🔥 ДОБАВЛЕНО: gameType для теста
-    };
-    
-    const result = await savePaymentToFirebase(testPaymentData);
-    
-    if (result.success) {
-      res.json({ 
-        success: true, 
-        message: '✅ Test payment created in Firebase',
-        paymentId: result.paymentId 
-      });
-    } else {
-      res.status(500).json({ 
-        success: false, 
-        error: '❌ Failed to create test payment: ' + result.error 
-      });
-    }
-  } catch (error) {
-    console.error('❌ Test payment error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: '❌ Test error: ' + error.message 
-    });
-  }
-});
-
-// 🔥 ТЕСТОВЫЙ МАРШРУТ ДЛЯ ПРОВЕРКИ GOOGLE SHEETS
-app.post("/api/test-google-sheets", async (req, res) => {
-  try {
-    console.log('🧪 Testing Google Sheets integration...');
-    
-    const testData = {
-      transactionId: 'test-' + Date.now(),
-      nickname: 'Test User',
-      payerEmail: 'test@example.com',
-      amount: '25.50',
-      items: [
-        { name: 'Exalted Orb', qty: 2, price: 5.00 },
-        { name: 'Divine Orb', qty: 1, price: 1.50 }
-      ],
-      gameType: 'poe2'
-    };
-
-    console.log('📤 Sending test data to Google Sheets...');
-    const result = await backupToGoogleSheets(testData);
-    
-    if (result.success) {
-      res.json({ 
-        success: true, 
-        message: '✅ Test data sent to Google Sheets successfully',
-        testData: testData,
-        sheetsResponse: result
-      });
-    } else {
-      res.status(500).json({ 
-        success: false, 
-        error: '❌ Failed to send test data to Google Sheets: ' + (result.error || 'Unknown error'),
-        testData: testData,
-        sheetsResponse: result
-      });
-    }
-  } catch (error) {
-    console.error('❌ Google Sheets test error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: '❌ Test error: ' + error.message 
-    });
-  }
-});
-
-// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ: проверка по transactionId + сохранение в Firestore
+// 🔥 ОБНОВЛЕННАЯ СИСТЕМА ОТЗЫВОВ
 app.post("/api/reviews", async (req, res) => {
   const { name, review, transactionId } = req.body;
   
@@ -1101,71 +752,46 @@ app.post("/api/reviews", async (req, res) => {
   }
 
   try {
-    console.log(`📝 New review attempt from: ${name}`);
-    
     let hasValidPurchase = false;
     let alreadyReviewed = false;
     let foundTransactionId = null;
 
-    // 🔥 ПРОВЕРЯЕМ В FIREBASE ПО TRANSACTION ID
     if (db && transactionId) {
       try {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
-        
         if (!snapshot.empty) {
           hasValidPurchase = true;
           const paymentData = snapshot.docs[0].data();
           foundTransactionId = paymentData.transactionId;
-          
-          // Проверяем, не оставлен ли уже отзыв для этой транзакции
           if (paymentData.reviewLeft) {
             alreadyReviewed = true;
-            console.log(`❌ Transaction ${transactionId} already has a review`);
           }
-        } else {
-          console.log(`❌ No purchase found for transaction: ${transactionId}`);
         }
       } catch (firebaseError) {
         console.error('Firebase check error:', firebaseError);
       }
     }
 
-    // 🔥 ЕСЛИ НЕТ ВАЛИДНОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (!hasValidPurchase) {
-      console.log(`❌ No valid purchase found for review - rejected`);
-      return res.status(403).json({ 
-        error: "You can only leave a review after making a purchase" 
-      });
+      return res.status(403).json({ error: "You can only leave a review after making a purchase" });
     }
 
-    // 🔥 ЕСЛИ УЖЕ ОСТАВЛЯЛ ОТЗЫВ ДЛЯ ЭТОЙ ПОКУПКИ - ОТКАЗЫВАЕМ
     if (alreadyReviewed) {
-      console.log(`❌ Review already exists for this purchase - rejected`);
-      return res.status(403).json({ 
-        error: "You have already left a review for this purchase. Thank you!" 
-      });
+      return res.status(403).json({ error: "You have already left a review for this purchase. Thank you!" });
     }
 
-    // 🔥 ЕСЛИ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - СОХРАНЯЕМ ОТЗЫВ В FIRESTORE
-    const reviewData = { 
-      name,
-      review, 
-      transactionId: foundTransactionId || transactionId
-    };
-    
+    const reviewData = { name, review, transactionId: foundTransactionId || transactionId };
     const firestoreResult = await saveReviewToFirestore(reviewData);
     
     if (!firestoreResult.success) {
       throw new Error('Failed to save review to database');
     }
 
-    // 🔥 ОБНОВЛЯЕМ FIREBASE - помечаем покупку как имеющую отзыв
     if (db && foundTransactionId) {
       try {
         const paymentsRef = db.collection('payments');
         const snapshot = await paymentsRef.where('transactionId', '==', foundTransactionId).get();
-        
         if (!snapshot.empty) {
           const paymentDoc = snapshot.docs[0];
           await paymentDoc.ref.update({
@@ -1173,924 +799,69 @@ app.post("/api/reviews", async (req, res) => {
             reviewName: name,
             'timestamps.updatedAt': new Date()
           });
-          console.log(`✅ Review flag updated in Firebase for transaction: ${foundTransactionId}`);
         }
       } catch (firebaseError) {
-        console.error('Error updating review flag in Firebase:', firebaseError);
+        console.error('Error updating review flag:', firebaseError);
       }
     }
 
-    console.log(`✅ Review submitted successfully by: ${name} for transaction: ${foundTransactionId}`);
-    res.json({ 
-      success: true, 
-      message: "Thank you for your review!" 
-    });
+    res.json({ success: true, message: "Thank you for your review!" });
   } catch (error) {
-    console.error('❌ Error in review submission:', error);
     res.status(500).json({ error: "Server error while processing review" });
   }
 });
 
-// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы из Firestore с правильным форматированием дат
+// 🔥 ИСПРАВЛЕННЫЙ МАРШРУТ: Получить все отзывы
 app.get("/api/reviews", async (req, res) => {
-  // 🔥 ДОБАВЛЕНО: Заголовки против кэширования
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   
   try {
     const result = await getReviewsFromFirestore();
-    
     if (result.success) {
-      // 🔥 ИСПРАВЛЕННОЕ ФОРМАТИРОВАНИЕ ДАТЫ
       const formattedReviews = result.reviews.map(review => {
         let date;
-        
-        // Обрабатываем Firestore Timestamp
         if (review.createdAt && review.createdAt.toDate) {
-          date = review.createdAt.toDate(); // Конвертируем Firestore Timestamp в Date
+          date = review.createdAt.toDate();
         } else if (review.createdAt) {
-          date = new Date(review.createdAt); // Обычная строка даты
+          date = new Date(review.createdAt);
         } else {
-          date = new Date(); // Fallback
+          date = new Date();
         }
-        
-        // Форматируем дату
-        const formattedDate = date.toLocaleDateString('ru-RU', {
-          year: 'numeric',
-          month: 'long', 
-          day: 'numeric'
-        });
-        
-        return {
-          name: review.name,
-          review: review.review,
-          date: formattedDate // Теперь это строка, а не объект
-        };
+        const formattedDate = date.toLocaleDateString('ru-RU', { year: 'numeric', month: 'long', day: 'numeric' });
+        return { name: review.name, review: review.review, date: formattedDate };
       });
-      
       res.json(formattedReviews);
     } else {
-      console.log('⚠️ Using fallback empty reviews due to error');
       res.json([]);
     }
   } catch (error) {
-    console.error('❌ Error reading reviews from Firestore:', error);
     res.json([]);
   }
 });
 
-// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Удалить отзыв из Firestore
+// 🔥 ОБНОВЛЕННЫЙ МАРШРУТ: Удалить отзыв
 app.delete("/api/reviews/:id", authMiddleware, async (req, res) => {
   const reviewId = req.params.id;
   
   try {
-    // 🔥 Удаляем отзыв из Firestore
     const deleteResult = await deleteReviewFromFirestore(reviewId);
-    
     if (!deleteResult.success) {
       throw new Error(deleteResult.error);
     }
     
-    // 🔥 Сбрасываем флаг отзыва в Firebase для соответствующей покупки
-    if (db) {
-      try {
-        // Получаем информацию об отзыве чтобы найти transactionId
-        const reviewRef = db.collection('reviews').doc(reviewId);
-        const reviewDoc = await reviewRef.get();
-        
-        if (reviewDoc.exists) {
-          const reviewData = reviewDoc.data();
-          const transactionId = reviewData.transactionId;
-          
-          if (transactionId) {
-            const paymentsRef = db.collection('payments');
-            const snapshot = await paymentsRef.where('transactionId', '==', transactionId).get();
-            
-            if (!snapshot.empty) {
-              const paymentDoc = snapshot.docs[0];
-              await paymentDoc.ref.update({
-                reviewLeft: false,
-                reviewName: null,
-                'timestamps.updatedAt': new Date()
-              });
-              console.log(`✅ Review flag reset in Firebase for transaction: ${transactionId}`);
-            }
-          }
-        }
-      } catch (firebaseError) {
-        console.error('Error resetting review flag in Firebase:', firebaseError);
-      }
-    }
-    
     res.json({ success: true, message: "Review deleted successfully" });
   } catch (error) {
-    console.error('❌ Error deleting review from Firestore:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete review: ' + error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to delete review' });
   }
 });
 
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ОТЗЫВОВ: получает данные из Firestore
-app.get("/admin/reviews", authMiddleware, async (req, res) => {
-  try {
-    const result = await getReviewsFromFirestore();
-    
-    if (!result.success) {
-      throw new Error(result.error);
-    }
-    
-    const reviewsWithId = result.reviews.map(review => ({
-      id: review.id,
-      name: review.name,
-      review: review.review,
-      date: review.createdAt,
-      transactionId: review.transactionId
-    }));
-    
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Reviews Management</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #0070ba; color: white; }
-            .delete-btn { 
-                background: #dc3545; 
-                color: white; 
-                padding: 6px 12px; 
-                border: none; 
-                border-radius: 4px; 
-                cursor: pointer; 
-            }
-            .delete-btn:hover { background: #c82333; }
-            .nav { margin-bottom: 20px; }
-            .nav a { 
-                background: #6c757d; 
-                color: white; 
-                padding: 10px 15px; 
-                text-decoration: none; 
-                border-radius: 5px; 
-                margin-right: 10px;
-            }
-            .nav a:hover { background: #5a6268; }
-            .nav a.active { background: #0070ba; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="nav">
-                <a href="/admin/payments?token=${req.query.token}">💳 Payments</a>
-                <a href="/admin/reviews?token=${req.query.token}" class="active">⭐ Reviews</a>
-            </div>
-            
-            <h1>⭐ Reviews Management (Firestore)</h1>
-            <p>Total reviews: ${reviewsWithId.length}</p>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>User</th>
-                        <th>Review</th>
-                        <th>Date</th>
-                        <th>Transaction ID</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${reviewsWithId.map(review => {
-                      let date;
-                      if (review.date && review.date.toDate) {
-                        date = review.date.toDate();
-                      } else if (review.date) {
-                        date = new Date(review.date);
-                      } else {
-                        date = new Date();
-                      }
-                      date.setHours(date.getHours() + 3);
-                      const formattedDate = date.toLocaleString('ru-RU');
-                      
-                      return `
-                    <tr id="review-${review.id}">
-                        <td>${review.id}</td>
-                        <td><strong>${review.name}</strong></td>
-                        <td>${review.review}</td>
-                        <td>${formattedDate}</td>
-                        <td><small>${review.transactionId}</small></td>
-                        <td>
-                            <button class="delete-btn" onclick="deleteReview('${review.id}')">
-                                Delete
-                            </button>
-                        </td>
-                    </tr>
-                    `}).join('')}
-                    ${reviewsWithId.length === 0 ? `
-                    <tr>
-                        <td colspan="6" style="text-align: center; padding: 40px;">
-                            No reviews found in Firestore.
-                        </td>
-                    </tr>
-                    ` : ''}
-                </tbody>
-            </table>
-        </div>
-
-        <script>
-            async function deleteReview(reviewId) {
-                if (!confirm('Are you sure you want to delete this review?')) {
-                    return;
-                }
-                
-                try {
-                    const response = await fetch('/api/reviews/' + reviewId, {
-                        method: 'DELETE',
-                        headers: {
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        document.getElementById('review-' + reviewId).remove();
-                        alert('Review deleted successfully!');
-                        // Перезагружаем страницу чтобы обновить список
-                        setTimeout(() => window.location.reload(), 1000);
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    alert('Error: ' + error.message);
-                }
-            }
-            
-            function getTokenFromUrl() {
-                const urlParams = new URLSearchParams(window.location.search);
-                return urlParams.get('token');
-            }
-        </script>
-    </body>
-    </html>
-    `;
-    
-    res.send(html);
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка получения отзывов из Firestore: ' + error.message 
-    });
-  }
-});
-
-// 🔥 ДОБАВЛЕНО: Красивый локальный просмотр покупок
-app.get("/local/payments", (req, res) => {
-  try {
-    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
-    
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Local Payments Backup</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #4CAF50; color: white; }
-            tr:hover { background-color: #f5f5f5; }
-            .delivered { background-color: #d4edda; }
-            .pending { background-color: #fff3cd; }
-            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-            .stats { display: flex; gap: 20px; margin-bottom: 20px; }
-            .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
-            .last-update { text-align: center; color: #666; margin-top: 20px; }
-            .nav-links { margin-bottom: 20px; text-align: center; }
-            .nav-links a { 
-                background: #6c757d; 
-                color: white; 
-                padding: 10px 15px; 
-                text-decoration: none; 
-                border-radius: 5px; 
-                margin: 0 5px;
-            }
-            .nav-links a:hover { background: #5a6268; }
-            .nav-links a.active { background: #4CAF50; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="nav-links">
-                <a href="/local/payments" class="active">📁 Local Backup</a>
-                <a href="/admin/payments">👑 Admin Panel</a>
-                <a href="/">🏠 Home</a>
-            </div>
-            
-            <div class="header">
-                <h1>💳 Local Payments Backup</h1>
-                <div>
-                    <span style="margin-right: 15px;">Total: ${purchases.length} payments</span>
-                </div>
-            </div>
-            
-            <div class="stats">
-                <div class="stat-card">
-                    <h3>💰 Total Revenue</h3>
-                    <p>$${purchases.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</p>
-                </div>
-                <div class="stat-card">
-                    <h3>✅ Delivered</h3>
-                    <p>${purchases.filter(p => p.delivery.delivered).length}</p>
-                </div>
-                <div class="stat-card">
-                    <h3>📦 Pending</h3>
-                    <p>${purchases.filter(p => !p.delivery.delivered).length}</p>
-                </div>
-            </div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Game</th> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
-                        <th>Transaction ID</th>
-                        <th>Buyer</th>
-                        <th>Amount</th>
-                        <th>Items</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${purchases.map(payment => {
-                      const createdAt = payment.timestamps?.createdAt;
-                      let formattedDate = 'Invalid Date';
-                      
-                      if (createdAt) {
-                        const date = new Date(createdAt);
-                        date.setHours(date.getHours() + 3);
-                        formattedDate = date.toLocaleString('ru-RU');
-                      }
-                      
-                      return `
-                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}">
-                        <td><strong>${payment.gameType || 'unknown'}</strong></td> <!-- 🔥 ПЕРЕМЕЩЕНО: Game в начало -->
-                        <td><strong>${payment.transactionId}</strong></td>
-                        <td>
-                            <div><strong>${payment.buyer.nickname}</strong></div>
-                            <small>${payment.buyer.email}</small>
-                        </td>
-                        <td>
-                            <strong>$${payment.amount.total}</strong>
-                            <div><small>${payment.amount.currency}</small></div>
-                        </td>
-                        <td>
-                            ${payment.items.map(item => `
-                            <div>${item.name} x${item.quantity} ($${item.subtotal || (item.price * item.quantity).toFixed(2)})</div>
-                            `).join('')}
-                            <small>Total items: ${payment.items.length}</small>
-                        </td>
-                        <td>${formattedDate}</td>
-                        <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
-                    </tr>
-                    `}).join('')}
-                    ${purchases.length === 0 ? `
-                    <tr>
-                        <td colspan="7" style="text-align: center; padding: 40px;">
-                            No payments found in local backup.
-                        </td>
-                    </tr>
-                    ` : ''}
-                </tbody>
-            </table>
-            
-            <div class="last-update">
-                <p>Last updated: ${new Date().toLocaleString('ru-RU')}</p>
-                <p><small>This is a local backup view. For full management use <a href="/admin/payments">Admin Panel</a></small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-    
-    res.send(html);
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка чтения локальных данных: ' + error.message 
-    });
-  }
-});
-
-// 🔥 ОБНОВЛЕННАЯ АДМИНКА: добавляем панель бота поддержки
-app.get("/admin/payments", authMiddleware, async (req, res) => {
-  try {
-    const paymentsRef = db.collection('payments');
-    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
-    
-    const payments = [];
-    snapshot.forEach(doc => {
-      payments.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
-    
-    // 🔥 ДОБАВЛЕНО: Информация о боте поддержки
-    let supportBotStatus = '❌ Not configured';
-    let supportBotLink = '#';
-    let supportBotUsername = 'support_bot';
-    
-    if (SUPPORT_BOT_TOKEN) {
-      try {
-        const botInfo = await axios.get(`https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}/getMe`);
-        supportBotStatus = `✅ @${botInfo.data.result.username}`;
-        supportBotLink = `https://t.me/${botInfo.data.result.username}`;
-        supportBotUsername = botInfo.data.result.username;
-      } catch (error) {
-        supportBotStatus = '❌ Error getting bot info';
-      }
-    }
-    
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Payments Admin</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #4CAF50; color: white; }
-            tr:hover { background-color: #f5f5f5; }
-            .delivered { background-color: #d4edda; }
-            .pending { background-color: #fff3cd; }
-            .status-delivered { color: #155724; font-weight: bold; }
-            .status-pending { color: #856404; font-weight: bold; }
-            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-            .stats { display: flex; gap: 20px; margin-bottom: 20px; }
-            .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
-            .logout { background: #dc3545; color: white; padding: 8px 15px; border: none; border-radius: 5px; cursor: pointer; }
-            .logout:hover { background: #c82333; }
-            .deliver-btn { 
-                background: #28a745; 
-                color: white; 
-                padding: 6px 12px; 
-                border: none; 
-                border-radius: 4px; 
-                cursor: pointer; 
-                font-size: 12px;
-            }
-            .deliver-btn:hover { background: #218838; }
-            .deliver-btn:disabled { 
-                background: #6c757d; 
-                cursor: not-allowed; 
-            }
-            .nav { margin-bottom: 20px; }
-            .nav a { 
-                background: #6c757d; 
-                color: white; 
-                padding: 10px 15px; 
-                text-decoration: none; 
-                border-radius: 5px; 
-                margin-right: 10px;
-            }
-            .nav a:hover { background: #5a6268; }
-            .nav a.active { background: #4CAF50; }
-            .backup-link { 
-                background: #17a2b8; 
-                color: white; 
-                padding: 8px 12px; 
-                text-decoration: none; 
-                border-radius: 4px; 
-                font-size: 12px;
-                margin-left: 10px;
-            }
-            .danger-zone { 
-                margin-top: 30px; 
-                padding: 20px; 
-                background: #f8d7da; 
-                border: 1px solid #f5c6cb; 
-                border-radius: 8px; 
-            }
-            .danger-zone h3 { color: #721c24; margin-top: 0; }
-            .clear-btn { 
-                padding: 8px 15px; 
-                border: none; 
-                border-radius: 5px; 
-                cursor: pointer; 
-                font-weight: bold;
-                transition: all 0.2s;
-            }
-            .clear-btn:hover { transform: scale(1.05); }
-            .game-badge { 
-                padding: 2px 6px; 
-                border-radius: 3px; 
-                font-size: 10px; 
-                font-weight: bold;
-            }
-            .poe2 { background: #0070ba; color: white; }
-            .poe1 { background: #28a745; color: white; }
-            .unknown { background: #6c757d; color: white; }
-            
-            /* 🔥 ДОБАВЛЕНО: Стили для бота поддержки */
-            .support-panel {
-                background: #e8f5e8;
-                padding: 15px;
-                border-radius: 8px;
-                margin-bottom: 20px;
-                border-left: 4px solid #28a745;
-            }
-            .support-panel h3 {
-                margin-top: 0;
-                color: #155724;
-            }
-            .bot-status {
-                display: inline-block;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-weight: bold;
-                margin-right: 10px;
-            }
-            .status-active { background: #d4edda; color: #155724; }
-            .status-inactive { background: #f8d7da; color: #721c24; }
-            .support-btn {
-                background: #28a745;
-                color: white;
-                border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
-                cursor: pointer;
-                margin-right: 5px;
-                text-decoration: none;
-                display: inline-block;
-            }
-            .support-btn:hover { background: #218838; }
-            .diagnostic-links {
-                margin-top: 10px;
-                font-size: 12px;
-            }
-            .diagnostic-links a {
-                color: #155724;
-                text-decoration: underline;
-                margin-right: 10px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="nav">
-                <a href="/admin/payments?token=${req.query.token}" class="active">💳 Payments</a>
-                <a href="/admin/reviews?token=${req.query.token}">⭐ Reviews</a>
-                <a href="/local/payments" class="backup-link">📁 Local Backup</a>
-            </div>
-            
-            <!-- 🔥 ДОБАВЛЕНО: Панель бота поддержки -->
-            <div class="support-panel">
-                <h3>🤖 Support Bot</h3>
-                <p>
-                    <span class="bot-status ${SUPPORT_BOT_TOKEN ? 'status-active' : 'status-inactive'}">
-                        ${supportBotStatus}
-                    </span>
-                    ${SUPPORT_BOT_TOKEN ? 
-                      `<a href="${supportBotLink}" target="_blank" class="support-btn">Open Bot</a> 
-                       <a href="/api/test-support-bot-message" target="_blank" class="support-btn">Test Message</a> 
-                       <button onclick="setupSupportWebhook()" class="support-btn">Setup Webhook</button>` 
-                      : 'Add SUPPORT_BOT_TOKEN to environment variables'}
-                </p>
-                <div class="diagnostic-links">
-                    <a href="/api/check-support-config" target="_blank">Check Config</a>
-                    <a href="/api/debug-support" target="_blank">Debug Info</a>
-                    <a href="/api/test-support-bot" target="_blank">Test Bot</a>
-                </div>
-                <p><small>Users can write to the support bot, and messages will be forwarded to you. Reply to forwarded messages to answer users.</small></p>
-            </div>
-            
-            <div class="header">
-                <h1>💳 Payments Management</h1>
-                <div>
-                    <span style="margin-right: 15px;">Total: ${payments.length} payments</span>
-                    <button class="logout" onclick="window.location.href='/admin/payments'">Logout</button>
-                </div>
-            </div>
-            
-            <div class="stats">
-                <div class="stat-card">
-                    <h3>💰 Total Revenue</h3>
-                    <p>$${payments.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</p>
-                </div>
-                <div class="stat-card">
-                    <h3>✅ Delivered</h3>
-                    <p>${payments.filter(p => p.delivery.delivered).length}</p>
-                </div>
-                <div class="stat-card">
-                    <h3>🎮 Games</h3>
-                    <p>PoE2: ${payments.filter(p => p.gameType === 'poe2').length}<br>PoE1: ${payments.filter(p => p.gameType === 'poe1').length}</p>
-                </div>
-            </div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Game</th>
-                        <th>Transaction ID</th>
-                        <th>Buyer</th>
-                        <th>Amount</th>
-                        <th>Items</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${payments.map(payment => {
-                      const createdAt = payment.timestamps.createdAt;
-                      let formattedDate = 'Invalid Date';
-                      
-                      if (createdAt && createdAt.toDate) {
-                        const date = createdAt.toDate();
-                        date.setHours(date.getHours() + 3);
-                        formattedDate = date.toLocaleString('ru-RU');
-                      } else if (createdAt) {
-                        const date = new Date(createdAt);
-                        date.setHours(date.getHours() + 3);
-                        formattedDate = date.toLocaleString('ru-RU');
-                      }
-                      
-                      const gameType = payment.gameType || 'unknown';
-                      const gameBadgeClass = gameType === 'poe2' ? 'poe2' : gameType === 'poe1' ? 'poe1' : 'unknown';
-                      const gameDisplayName = gameType === 'poe2' ? 'PoE2' : gameType === 'poe1' ? 'PoE1' : 'Unknown';
-                      
-                      return `
-                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
-                        <td><span class="game-badge ${gameBadgeClass}">${gameDisplayName}</span></td>
-                        <td><strong>${payment.transactionId}</strong></td>
-                        <td>
-                            <div><strong>${payment.buyer.nickname}</strong></div>
-                            <small>${payment.buyer.email}</small>
-                        </td>
-                        <td>
-                            <strong>$${payment.amount.total}</strong>
-                            <div><small>${payment.amount.currency}</small></div>
-                        </td>
-                        <td>
-                            ${payment.items.map(item => `
-                            <div>${item.name} x${item.quantity} ($${item.subtotal})</div>
-                            `).join('')}
-                            <small>Total items: ${payment.items.length}</small>
-                        </td>
-                        <td>${formattedDate}</td>
-                        <td class="${payment.delivery.delivered ? 'status-delivered' : 'status-pending'}" id="status-${payment.id}">
-                            ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
-                        </td>
-                        <td>
-                            ${!payment.delivery.delivered ? 
-                              `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
-                                Mark Delivered
-                              </button>` : 
-                              '<span style="color: #28a745;">✅ Done</span>'
-                            }
-                        </td>
-                    </tr>
-                    `}).join('')}
-                    ${payments.length === 0 ? `
-                    <tr>
-                        <td colspan="8" style="text-align: center; padding: 40px;">
-                            No payments found. Payments will appear here after successful transactions.
-                        </td>
-                    </tr>
-                    ` : ''}
-                </tbody>
-            </table>
-
-            <!-- 🔥 ДОБАВЛЕНО: Зона опасности с функциями очистки -->
-            <div class="danger-zone">
-                <h3>⚠️ Danger Zone</h3>
-                
-                <div class="stats" style="margin-bottom: 15px;">
-                    <div class="stat-card" style="background: #fff3cd;">
-                        <h4>📊 Data Statistics</h4>
-                        <p>Local: <span id="local-count">0</span> | Firebase: <span id="firebase-count">0</span> | Reviews: <span id="reviews-count">0</span></p>
-                        <p>Games: PoE2: <span id="poe2-count">0</span> | PoE1: <span id="poe1-count">0</span></p>
-                    </div>
-                </div>
-
-                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                    <button class="clear-btn" onclick="clearData('local')" style="background: #ffc107; color: #000;">🗑️ Clear Local</button>
-                    <button class="clear-btn" onclick="clearData('firebase')" style="background: #fd7e14; color: #000;">🔥 Clear Firebase</button>
-                    <button class="clear-btn" onclick="clearData('all')" style="background: #dc3545; color: white;">💥 Clear All</button>
-                    <button class="clear-btn" onclick="clearReviews()" style="background: #e83e8c; color: white;">⭐ Clear Reviews</button>
-                </div>
-                
-                <p style="color: #856404; font-size: 12px; margin-top: 10px; margin-bottom: 0;">
-                    ⚠️ This action cannot be undone!
-                </p>
-            </div>
-        </div>
-
-        <script>
-            async function markAsDelivered(paymentId, transactionId) {
-                const btn = document.getElementById('btn-' + paymentId);
-                const statusCell = document.getElementById('status-' + paymentId);
-                const row = document.getElementById('row-' + paymentId);
-                
-                btn.disabled = true;
-                btn.textContent = 'Updating...';
-                
-                try {
-                    const response = await fetch('/api/mark-delivered', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        },
-                        body: JSON.stringify({
-                            transactionId: transactionId,
-                            paymentId: paymentId
-                        })
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        statusCell.innerHTML = '✅ Delivered';
-                        statusCell.className = 'status-delivered';
-                        row.className = 'delivered';
-                        btn.outerHTML = '<span style="color: #28a745;">✅ Done</span>';
-                        showNotification('Order marked as delivered!', 'success');
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    btn.disabled = false;
-                    btn.textContent = 'Mark Delivered';
-                    showNotification('Error: ' + error.message, 'error');
-                }
-            }
-            
-            function getTokenFromUrl() {
-                const urlParams = new URLSearchParams(window.location.search);
-                return urlParams.get('token');
-            }
-            
-            function showNotification(message, type) {
-                const notification = document.createElement('div');
-                notification.style.cssText = \`
-                    position: fixed;
-                    top: 20px;
-                    right: 20px;
-                    padding: 15px 20px;
-                    border-radius: 5px;
-                    color: white;
-                    font-weight: bold;
-                    z-index: 1000;
-                    opacity: 0;
-                    transition: opacity 0.3s;
-                    background-color: \${type === 'success' ? '#28a745' : '#dc3545'};
-                \`;
-                notification.textContent = message;
-                
-                document.body.appendChild(notification);
-                
-                setTimeout(() => notification.style.opacity = '1', 100);
-                
-                setTimeout(() => {
-                    notification.style.opacity = '0';
-                    setTimeout(() => notification.remove(), 300);
-                }, 3000);
-            }
-
-            // 🔥 ДОБАВЛЕНО: Функции очистки данных
-            async function loadStats() {
-                try {
-                    const response = await fetch('/api/stats', {
-                        headers: { 'Authorization': 'Bearer ' + getTokenFromUrl() }
-                    });
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        document.getElementById('local-count').textContent = result.stats.localPurchases;
-                        document.getElementById('firebase-count').textContent = result.stats.firebasePurchases;
-                        document.getElementById('reviews-count').textContent = result.stats.reviews;
-                        document.getElementById('poe2-count').textContent = result.stats.gameStats.poe2;
-                        document.getElementById('poe1-count').textContent = result.stats.gameStats.poe1;
-                    }
-                } catch (error) {
-                    console.error('Error loading stats:', error);
-                }
-            }
-
-            async function clearData(type) {
-                const typeNames = {
-                    'local': 'local purchases',
-                    'firebase': 'Firebase data', 
-                    'all': 'ALL data'
-                };
-                
-                if (!confirm(\`ARE YOU SURE? This will delete \${typeNames[type]}. This action cannot be undone!\`)) {
-                    return;
-                }
-
-                try {
-                    const response = await fetch('/api/clear-purchases', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        },
-                        body: JSON.stringify({ type })
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showNotification('✅ ' + result.messages.join(', '), 'success');
-                        setTimeout(() => window.location.reload(), 2000);
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    showNotification('❌ Error: ' + error.message, 'error');
-                }
-            }
-
-            async function clearReviews() {
-                if (!confirm('ARE YOU SURE? This will delete ALL reviews. This action cannot be undone!')) {
-                    return;
-                }
-
-                try {
-                    const response = await fetch('/api/clear-reviews', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showNotification('✅ ' + result.message, 'success');
-                        setTimeout(() => window.location.reload(), 2000);
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    showNotification('❌ Error: ' + error.message, 'error');
-                }
-            }
-
-            // 🔥 ДОБАВЛЕНО: Функция для настройки вебхука поддержки
-            async function setupSupportWebhook() {
-                try {
-                    const response = await fetch('/api/setup-support-webhook', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': 'Bearer ' + getTokenFromUrl()
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showNotification('✅ Support bot webhook setup successfully!', 'success');
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    showNotification('❌ Error: ' + error.message, 'error');
-                }
-            }
-
-            // Загружаем статистику при старте
-            loadStats();
-        </script>
-    </body>
-    </html>
-    `;
-    
-    res.send(html);
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка получения платежей: ' + error.message 
-    });
-  }
-});
-
-// --- Пометить заказ как выданный (обновленная версия) ---
+// --- Пометить заказ как выданный ---
 app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
   const { transactionId, paymentId } = req.body;
   
   try {
-    // Обновляем в Firebase
     const paymentRef = db.collection('payments').doc(paymentId);
     await paymentRef.update({
       'delivery.delivered': true,
@@ -2098,7 +869,6 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
       'timestamps.updatedAt': new Date()
     });
     
-    // 🔥 ДОБАВЛЕНО: Также обновляем локальный файл
     try {
       const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
       const localPayment = purchases.find(p => p.firebaseId === paymentId || p.transactionId === transactionId);
@@ -2107,46 +877,22 @@ app.post("/api/mark-delivered", authMiddleware, async (req, res) => {
         localPayment.delivery.deliveredAt = new Date();
         localPayment.timestamps.updatedAt = new Date();
         fs.writeFileSync(purchasesFile, JSON.stringify(purchases, null, 2));
-        console.log('✅ Local backup updated for delivery status');
       }
     } catch (localError) {
-      console.error('❌ Error updating local backup:', localError);
+      console.error('Error updating local backup:', localError);
     }
     
-    console.log(`✅ Order ${transactionId} marked as delivered`);
-    res.json({ 
-      success: true, 
-      message: 'Order marked as delivered successfully' 
-    });
+    res.json({ success: true, message: 'Order marked as delivered successfully' });
   } catch (error) {
-    console.error('❌ Error marking order as delivered:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to mark order as delivered: ' + error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to mark order as delivered' });
   }
 });
 
 // --- Старт сервера ---
 app.listen(PORT, () => {
   console.log(`✅ Server started on port ${PORT}`);
-  console.log(`🤖 Bots configured:`);
-  console.log(`   💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
-  console.log(`   💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
-  console.log(`🔥 Firebase integration: ${db ? 'READY' : 'NOT READY'}`);
-  console.log(`🎮 Game types support: PoE2, PoE1`);
-  console.log(`📝 Reviews stored in Firestore collection 'reviews'`);
-  
-  console.log(`\n🔧 Diagnostic Endpoints:`);
-  console.log(`   📊 Check Config: https://paypal-server-46qg.onrender.com/api/check-support-config`);
-  console.log(`   🧪 Test Message: https://paypal-server-46qg.onrender.com/api/test-support-bot-message`);
-  console.log(`   🔍 Debug Info: https://paypal-server-46qg.onrender.com/api/debug-support`);
-  console.log(`   🤖 Test Bot: https://paypal-server-46qg.onrender.com/api/test-support-bot`);
-  
-  console.log(`\n👑 Admin Panel: https://paypal-server-46qg.onrender.com/admin/payments`);
-  console.log(`📁 Local Backup: https://paypal-server-46qg.onrender.com/local/payments`);
-  
-  console.log(`\n🌐 Webhooks:`);
-  console.log(`   💳 PayPal Webhook: https://paypal-server-46qg.onrender.com/webhook`);
-  console.log(`   💬 Support Webhook: https://paypal-server-46qg.onrender.com/webhook-support`);
+  console.log(`🤖 Multi-language support: ✅ ENABLED`);
+  console.log(`💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
+  console.log(`💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
+  console.log(`🌐 Available commands: /start, /help, /english, /russian, /language`);
 });
