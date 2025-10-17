@@ -386,7 +386,7 @@ app.get("/", (req, res) => {
       webhookSupport: "/webhook-support (for Support bot)",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)
+      testGoogleSheets: "/api/test-google-sheets (POST)"
     },
     status: "active",
     timestamp: new Date().toISOString()
