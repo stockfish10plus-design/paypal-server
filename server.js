@@ -29,8 +29,8 @@ const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ДОБАВЛЕНО: Хранилище для связи сообщений поддержки
-let userMessageMap = {};
+// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с красивым оформлением
+let userDialogs = new Map();
 
 // ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
 
@@ -45,7 +45,7 @@ app.get("/api/check-support-config", (req, res) => {
       '✅ SET' : '❌ NOT SET',
     serverUrl: `https://${req.get('host')}`,
     webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
-    userMessageMapSize: Object.keys(userMessageMap).length
+    userDialogsSize: userDialogs.size
   };
   
   console.log('🔧 Support Bot Configuration Check:', config);
@@ -99,7 +99,7 @@ app.get("/api/debug-support", (req, res) => {
     telegramChatId: TELEGRAM_CHAT_ID ? "✅ SET: " + TELEGRAM_CHAT_ID : "❌ MISSING",
     paypalBotToken: PAYPAL_BOT_TOKEN ? "✅ SET" : "❌ MISSING",
     webhookSupportUrl: `https://${req.get('host')}/webhook-support`,
-    userMessageMapSize: Object.keys(userMessageMap).length,
+    userDialogsSize: userDialogs.size,
     environment: {
       NODE_ENV: process.env.NODE_ENV || 'not set',
       RENDER: process.env.RENDER ? '✅' : '❌'
@@ -107,13 +107,11 @@ app.get("/api/debug-support", (req, res) => {
   });
 });
 
-// ==================== ВЕБХУК ПОДДЕРЖКИ ====================
+// ==================== ПЕРЕДЕЛАННЫЙ ВЕБХУК ПОДДЕРЖКИ ====================
 
-// 🔥 ДОБАВЛЕНО: ВЕБХУК ДЛЯ ВТОРОГО БОТА (ПОДДЕРЖКА)
+// 🔥 ПЕРЕДЕЛАНО: ВЕБХУК ДЛЯ ВТОРОГО БОТА (ПОДДЕРЖКА) С РАЗДЕЛЕННЫМИ ДИАЛОГАМИ
 app.post("/webhook-support", async (req, res) => {
   console.log('💬 ===== SUPPORT BOT WEBHOOK CALLED =====');
-  console.log('📦 Headers:', req.headers);
-  console.log('📨 Body:', JSON.stringify(req.body, null, 2));
   
   const update = req.body;
   
@@ -134,82 +132,116 @@ app.post("/webhook-support", async (req, res) => {
   if (update.message && !update.message.reply_to_message) {
     const chatId = update.message.chat.id;
     const text = update.message.text || '(медиа-сообщение)';
-    const userName = update.message.from.first_name || 'Неизвестный';
+    const userName = update.message.from.first_name + (update.message.from.last_name ? ' ' + update.message.from.last_name : '');
     const userId = update.message.from.id;
+    const username = update.message.from.username ? `@${update.message.from.username}` : 'нет username';
     
     console.log(`💬 New message from ${userName} (ID: ${userId}): "${text}"`);
-    console.log(`📞 Chat ID: ${chatId}, Telegram Chat ID: ${TELEGRAM_CHAT_ID}`);
     
     try {
-      // Пересылаем сообщение админу
-      console.log(`📤 Forwarding to admin ${TELEGRAM_CHAT_ID}...`);
+      // Проверяем, новый ли это пользователь
+      if (!userDialogs.has(userId)) {
+        // 🔥 НОВЫЙ ДИАЛОГ - создаем разделитель
+        const separatorMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: TELEGRAM_CHAT_ID,
+          text: `───────────────\n💎 ДИАЛОГ С ${userName.toUpperCase()}\n🆔 ${userId}\n────────────────────`,
+          parse_mode: 'HTML'
+        });
+
+        // Сохраняем информацию о диалоге
+        userDialogs.set(userId, {
+          userChatId: chatId,
+          userName: userName,
+          username: username,
+          started: new Date(),
+          separatorMessageId: separatorMessage.data.result.message_id,
+          lastUserMessageId: null
+        });
+
+        console.log(`🆕 New dialog created for ${userName} (ID: ${userId})`);
+      }
+
+      // Получаем данные диалога
+      const dialog = userDialogs.get(userId);
       
-      const sentMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+      // 🔥 Отправляем сообщение пользователя под разделителем
+      const userMessage = await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: TELEGRAM_CHAT_ID,
-        text: `👤 <b>Сообщение от ${userName}:</b>\n${text}`,
-        parse_mode: 'HTML'
+        text: `<b>${userName}:</b> ${text}`,
+        parse_mode: 'HTML',
+        reply_to_message_id: dialog.separatorMessageId
+      });
+
+      // Обновляем последнее сообщение пользователя
+      dialog.lastUserMessageId = userMessage.data.result.message_id;
+      userDialogs.set(userId, dialog);
+
+      // Подтверждаем получение пользователю
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: chatId,
+        text: '✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.'
       });
       
-      console.log('✅ Message sent to admin, response:', sentMessage.data);
-      
-      // Сохраняем связь для ответов
-      userMessageMap[sentMessage.data.result.message_id] = {
-        userChatId: chatId,
-        userId: userId,
-        userName: userName
-      };
-      
-      console.log(`💾 Saved mapping: message_id ${sentMessage.data.result.message_id} -> user ${userName}`);
-      
+      console.log(`✅ Message from ${userName} forwarded to admin`);
+
     } catch (error) {
-      console.error('❌ Error forwarding message to admin:');
+      console.error('❌ Error processing user message:');
       console.error('🔧 Error details:', error.response?.data || error.message);
-      console.error('🔧 Request config:', error.config);
     }
   }
   
-  // Обработка ответов админа (реплая)
+  // 🔥 ПЕРЕДЕЛАНО: Обработка ответов админа (реплаев)
   if (update.message && update.message.reply_to_message && update.message.chat.id.toString() === TELEGRAM_CHAT_ID.toString()) {
     const adminReplyText = update.message.text;
     const repliedMessageId = update.message.reply_to_message.message_id;
     
     console.log(`🔁 Admin reply detected: "${adminReplyText}" to message ${repliedMessageId}`);
     
-    // Находим данные пользователя по message_id реплая
-    const userData = userMessageMap[repliedMessageId];
+    // Ищем пользователя по message_id реплая
+    let targetUserId = null;
+    let targetDialog = null;
     
-    if (userData && adminReplyText) {
-      console.log(`📨 Sending reply to user ${userData.userName} (${userData.userId})`);
+    for (let [userId, dialog] of userDialogs.entries()) {
+      if (dialog.lastUserMessageId === repliedMessageId || 
+          dialog.separatorMessageId === repliedMessageId) {
+        targetUserId = userId;
+        targetDialog = dialog;
+        break;
+      }
+    }
+    
+    if (targetUserId && targetDialog && adminReplyText) {
+      console.log(`📨 Sending reply to user ${targetDialog.userName} (${targetUserId})`);
       
       try {
         // Отправляем ответ пользователю
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-          chat_id: userData.userChatId,
-          text: `💬 <b>Support response:</b>\n${adminReplyText}`,
+          chat_id: targetDialog.userChatId,
+          text: `💬 <b>Ответ поддержки:</b>\n${adminReplyText}`,
           parse_mode: 'HTML'
         });
         
-        // Подтверждаем админу
+        // 🔥 Отправляем ответ в диалог под разделителем
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
-          text: '✅ <b>Reply sent to user!</b>',
+          text: `<b>Поддержка:</b> ${adminReplyText}`,
           parse_mode: 'HTML',
-          reply_to_message_id: update.message.message_id
+          reply_to_message_id: targetDialog.separatorMessageId
         });
         
-        console.log(`✅ Reply sent to user ${userData.userName} (${userData.userId})`);
+        console.log(`✅ Reply sent to user ${targetDialog.userName}`);
       } catch (error) {
         console.error('❌ Error sending reply to user:', error.response?.data || error.message);
         
         // Если не удалось отправить (пользователь заблокировал бота и т.д.)
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,
-          text: '❌ <b>Failed to send reply to user.</b>\nMaybe user blocked the bot.',
+          text: '❌ <b>Не удалось отправить ответ пользователю.</b>\nВозможно, пользователь заблокировал бота.',
           parse_mode: 'HTML'
         });
       }
     } else {
-      console.log('❌ No user data found for reply or no reply text');
+      console.log('❌ No dialog found for reply or no reply text');
     }
   }
 
@@ -241,13 +273,24 @@ async function handleSupportBotCommand(message) {
     if (text === '/start') {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `👋 <b>Welcome to support!</b>\n\nJust write your question.`,
+        text: `👋 <b>Добро пожаловать в поддержку!</b>\n\nПросто напишите ваш вопрос, и мы ответим вам в ближайшее время.`,
         parse_mode: 'HTML'
       });
     } else if (text === '/help') {
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
-        text: `ℹ️ <b>Help</b>\n\n• Just write your question\n• Support will answer you in this chat\n• For payment issues include your transaction ID`,
+        text: `ℹ️ <b>Помощь</b>\n\n• Просто напишите ваш вопрос\n• Поддержка ответит вам в этом чате\n• Для вопросов по оплате укажите ID транзакции`,
+        parse_mode: 'HTML'
+      });
+    } else if (text === '/stats' && chatId.toString() === TELEGRAM_CHAT_ID.toString()) {
+      // Статистика для админа
+      const activeDialogs = Array.from(userDialogs.entries()).filter(([_, dialog]) => 
+        Date.now() - new Date(dialog.started).getTime() < 24 * 60 * 60 * 1000
+      ).length;
+      
+      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: `📊 <b>Статистика поддержки</b>\n\n• Активных диалогов: ${activeDialogs}\n• Всего диалогов: ${userDialogs.size}\n• Время сервера: ${new Date().toLocaleString('ru-RU')}`,
         parse_mode: 'HTML'
       });
     }
@@ -343,14 +386,14 @@ app.get("/", (req, res) => {
       webhookSupport: "/webhook-support (for Support bot)",
       login: "/api/login",
       testPayment: "/api/test-firebase-payment (POST)",
-      testGoogleSheets: "/api/test-google-sheets (POST)"
+      testGoogleSheets: "/api/test-google-sheets (POST)
     },
     status: "active",
     timestamp: new Date().toISOString()
   });
 });
 
-// ========== ТВОЙ СУЩЕСТВУЮЩИЙ КОД НИЖЕ (без изменений) ==========
+// ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
 
 // 🔥 ДОБАВЛЕНО: Функции для работы с отзывами в Firestore
 async function saveReviewToFirestore(reviewData) {
