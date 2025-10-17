@@ -29,7 +29,7 @@ const TELEGRAM_API_SUPPORT = `https://api.telegram.org/bot${SUPPORT_BOT_TOKEN}`;
 app.use(bodyParser.json());
 app.use(cors());
 
-// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов
+// 🔥 ПЕРЕДЕЛАНО: Хранилище для диалогов с флагом первого сообщения
 let userDialogs = new Map();
 
 // ==================== ДИАГНОСТИЧЕСКИЕ МАРШРУТЫ ====================
@@ -106,10 +106,11 @@ app.post("/webhook-support", async (req, res) => {
           userName: userName,
           started: new Date(),
           separatorMessageId: separatorMessage.data.result.message_id,
-          lastUserMessageId: null
+          lastUserMessageId: null,
+          firstMessageSent: false // 🔥 ФЛАГ первого сообщения
         });
 
-        // 🔥 ДУБЛИРОВАНИЕ: Приветственное сообщение на русском и английском
+        // 🔥 ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ ТОЛЬКО ПРИ ПЕРВОМ КОНТАКТЕ
         await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
           chat_id: chatId,
           text: `👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.\n\n👋 Welcome to support! Just write your question and we will answer you as soon as possible.`
@@ -127,13 +128,17 @@ app.post("/webhook-support", async (req, res) => {
       });
 
       dialog.lastUserMessageId = userMessage.data.result.message_id;
+      
+      // 🔥 ПОДТВЕРЖДЕНИЕ ТОЛЬКО ПРИ ПЕРВОМ СООБЩЕНИИ ПОСЛЕ СТАРТА
+      if (!dialog.firstMessageSent) {
+        await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
+          chat_id: chatId,
+          text: `✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.\n\n✅ Your message has been received. We will respond to you shortly.`
+        });
+        dialog.firstMessageSent = true; // 🔥 УСТАНАВЛИВАЕМ ФЛАГ
+      }
+      
       userDialogs.set(userId, dialog);
-
-      // 🔥 ДУБЛИРОВАНИЕ: Подтверждение получения на русском и английском
-      await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
-        chat_id: chatId,
-        text: `✅ Ваше сообщение получено. Мы ответим вам в ближайшее время.\n\n✅ Your message has been received. We will respond to you shortly.`
-      });
       
     } catch (error) {
       console.error('❌ Error:', error.response?.data || error.message);
@@ -184,17 +189,22 @@ app.post("/webhook-support", async (req, res) => {
 async function handleSupportBotCommand(message) {
   const chatId = message.chat.id;
   const text = message.text;
+  const userId = message.from.id;
   
   try {
     if (text === '/start') {
-      // 🔥 ДУБЛИРОВАНИЕ: Приветственное сообщение на русском и английском
+      // 🔥 ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ ТОЛЬКО ПРИ КОМАНДЕ /start
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
         text: `👋 Добро пожаловать в поддержку! Просто напишите ваш вопрос, и мы ответим вам в ближайшее время.\n\n👋 Welcome to support! Just write your question and we will answer you as soon as possible.`
       });
       
+      // Сбрасываем флаг первого сообщения при новом /start
+      if (userDialogs.has(userId)) {
+        userDialogs.get(userId).firstMessageSent = false;
+      }
+      
     } else if (text === '/help') {
-      // 🔥 ДУБЛИРОВАНИЕ: Помощь на русском и английском
       await axios.post(`${TELEGRAM_API_SUPPORT}/sendMessage`, {
         chat_id: chatId,
         text: `ℹ️ Помощь / Help
@@ -217,8 +227,417 @@ app.get("/", (req, res) => {
       multiLanguage: "✅ Enabled (Russian/English)",
       supportBot: SUPPORT_BOT_TOKEN ? "✅ Configured" : "❌ Not configured",
       paypalBot: PAYPAL_BOT_TOKEN ? "✅ Configured" : "❌ Not configured"
+    },
+    endpoints: {
+      adminPayments: "/admin/payments",
+      adminReviews: "/admin/reviews", 
+      localPayments: "/local/payments",
+      webhook: "/webhook",
+      webhookSupport: "/webhook-support"
     }
   });
+});
+
+// ========== ВОССТАНОВЛЕННЫЕ МАРШРУТЫ АДМИНКИ ==========
+
+// 🔥 ВОССТАНОВЛЕНО: Админка для платежей
+app.get("/admin/payments", authMiddleware, async (req, res) => {
+  try {
+    const paymentsRef = db.collection('payments');
+    const snapshot = await paymentsRef.orderBy('timestamps.createdAt', 'desc').get();
+    
+    const payments = [];
+    snapshot.forEach(doc => {
+      payments.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payments Admin</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #4CAF50; color: white; }
+            .delivered { background-color: #d4edda; }
+            .pending { background-color: #fff3cd; }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+            .stat-card { background: #e3f2fd; padding: 15px; border-radius: 5px; flex: 1; text-align: center; }
+            .logout { background: #dc3545; color: white; padding: 8px 15px; border: none; border-radius: 5px; cursor: pointer; }
+            .deliver-btn { 
+                background: #28a745; 
+                color: white; 
+                padding: 6px 12px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+            }
+            .nav { margin-bottom: 20px; }
+            .nav a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin-right: 10px;
+            }
+            .nav a.active { background: #4CAF50; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav">
+                <a href="/admin/payments?token=${req.query.token}" class="active">💳 Payments</a>
+                <a href="/admin/reviews?token=${req.query.token}">⭐ Reviews</a>
+                <a href="/local/payments">📁 Local Backup</a>
+            </div>
+            
+            <div class="header">
+                <h1>💳 Payments Management</h1>
+                <div>
+                    <span style="margin-right: 15px;">Total: ${payments.length} payments</span>
+                    <button class="logout" onclick="window.location.href='/admin/payments'">Logout</button>
+                </div>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>💰 Total Revenue</h3>
+                    <p>$${payments.reduce((sum, payment) => sum + parseFloat(payment.amount.total), 0).toFixed(2)}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>✅ Delivered</h3>
+                    <p>${payments.filter(p => p.delivery.delivered).length}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>📦 Pending</h3>
+                    <p>${payments.filter(p => !p.delivery.delivered).length}</p>
+                </div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th>Buyer</th>
+                        <th>Amount</th>
+                        <th>Items</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${payments.map(payment => {
+                      const createdAt = payment.timestamps.createdAt;
+                      let formattedDate = 'Invalid Date';
+                      
+                      if (createdAt && createdAt.toDate) {
+                        const date = createdAt.toDate();
+                        date.setHours(date.getHours() + 3);
+                        formattedDate = date.toLocaleString('ru-RU');
+                      }
+                      
+                      return `
+                    <tr class="${payment.delivery.delivered ? 'delivered' : 'pending'}" id="row-${payment.id}">
+                        <td><strong>${payment.transactionId}</strong></td>
+                        <td>
+                            <div><strong>${payment.buyer.nickname}</strong></div>
+                            <small>${payment.buyer.email}</small>
+                        </td>
+                        <td>
+                            <strong>$${payment.amount.total}</strong>
+                        </td>
+                        <td>
+                            ${payment.items.map(item => `
+                            <div>${item.name} x${item.quantity}</div>
+                            `).join('')}
+                        </td>
+                        <td>${formattedDate}</td>
+                        <td id="status-${payment.id}">
+                            ${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}
+                        </td>
+                        <td>
+                            ${!payment.delivery.delivered ? 
+                              `<button class="deliver-btn" onclick="markAsDelivered('${payment.id}', '${payment.transactionId}')" id="btn-${payment.id}">
+                                Mark Delivered
+                              </button>` : 
+                              '<span style="color: #28a745;">✅ Done</span>'
+                            }
+                        </td>
+                    </tr>
+                    `}).join('')}
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            async function markAsDelivered(paymentId, transactionId) {
+                const btn = document.getElementById('btn-' + paymentId);
+                const statusCell = document.getElementById('status-' + paymentId);
+                const row = document.getElementById('row-' + paymentId);
+                
+                btn.disabled = true;
+                btn.textContent = 'Updating...';
+                
+                try {
+                    const response = await fetch('/api/mark-delivered', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        },
+                        body: JSON.stringify({
+                            transactionId: transactionId,
+                            paymentId: paymentId
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        statusCell.innerHTML = '✅ Delivered';
+                        row.className = 'delivered';
+                        btn.outerHTML = '<span style="color: #28a745;">✅ Done</span>';
+                        alert('Order marked as delivered!');
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    btn.disabled = false;
+                    btn.textContent = 'Mark Delivered';
+                    alert('Error: ' + error.message);
+                }
+            }
+            
+            function getTokenFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('token');
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Error loading payments' });
+  }
+});
+
+// 🔥 ВОССТАНОВЛЕНО: Админка для отзывов
+app.get("/admin/reviews", authMiddleware, async (req, res) => {
+  try {
+    const result = await getReviewsFromFirestore();
+    
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+    
+    const reviewsWithId = result.reviews.map(review => ({
+      id: review.id,
+      name: review.name,
+      review: review.review,
+      date: review.createdAt,
+      transactionId: review.transactionId
+    }));
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reviews Management</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #0070ba; color: white; }
+            .delete-btn { 
+                background: #dc3545; 
+                color: white; 
+                padding: 6px 12px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+            }
+            .nav { margin-bottom: 20px; }
+            .nav a { 
+                background: #6c757d; 
+                color: white; 
+                padding: 10px 15px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                margin-right: 10px;
+            }
+            .nav a.active { background: #0070ba; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav">
+                <a href="/admin/payments?token=${req.query.token}">💳 Payments</a>
+                <a href="/admin/reviews?token=${req.query.token}" class="active">⭐ Reviews</a>
+            </div>
+            
+            <h1>⭐ Reviews Management</h1>
+            <p>Total reviews: ${reviewsWithId.length}</p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Review</th>
+                        <th>Date</th>
+                        <th>Transaction ID</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reviewsWithId.map(review => {
+                      let date;
+                      if (review.date && review.date.toDate) {
+                        date = review.date.toDate();
+                      } else if (review.date) {
+                        date = new Date(review.date);
+                      } else {
+                        date = new Date();
+                      }
+                      const formattedDate = date.toLocaleString('ru-RU');
+                      
+                      return `
+                    <tr id="review-${review.id}">
+                        <td><strong>${review.name}</strong></td>
+                        <td>${review.review}</td>
+                        <td>${formattedDate}</td>
+                        <td><small>${review.transactionId}</small></td>
+                        <td>
+                            <button class="delete-btn" onclick="deleteReview('${review.id}')">
+                                Delete
+                            </button>
+                        </td>
+                    </tr>
+                    `}).join('')}
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            async function deleteReview(reviewId) {
+                if (!confirm('Are you sure you want to delete this review?')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/reviews/' + reviewId, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': 'Bearer ' + getTokenFromUrl()
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        document.getElementById('review-' + reviewId).remove();
+                        alert('Review deleted successfully!');
+                    } else {
+                        throw new Error(result.error);
+                    }
+                } catch (error) {
+                    alert('Error: ' + error.message);
+                }
+            }
+            
+            function getTokenFromUrl() {
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('token');
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Error loading reviews' });
+  }
+});
+
+// 🔥 ВОССТАНОВЛЕНО: Локальный просмотр платежей
+app.get("/local/payments", (req, res) => {
+  try {
+    const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
+    
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Local Payments Backup</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #4CAF50; color: white; }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>💳 Local Payments Backup</h1>
+                <div>Total: ${purchases.length} payments</div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th>Buyer</th>
+                        <th>Amount</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${purchases.map(payment => {
+                      const createdAt = payment.timestamps?.createdAt;
+                      let formattedDate = 'Invalid Date';
+                      
+                      if (createdAt) {
+                        const date = new Date(createdAt);
+                        date.setHours(date.getHours() + 3);
+                        formattedDate = date.toLocaleString('ru-RU');
+                      }
+                      
+                      return `
+                    <tr>
+                        <td><strong>${payment.transactionId}</strong></td>
+                        <td>${payment.buyer.nickname}</td>
+                        <td>$${payment.amount.total}</td>
+                        <td>${formattedDate}</td>
+                        <td>${payment.delivery.delivered ? '✅ Delivered' : '🕐 Pending'}</td>
+                    </tr>
+                    `}).join('')}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Error reading local data' });
+  }
 });
 
 // ========== ОСТАЛЬНОЙ КОД ==========
@@ -770,4 +1189,5 @@ app.listen(PORT, () => {
   console.log(`🤖 Multi-language support: ✅ ENABLED (Russian/English)`);
   console.log(`💬 Support Bot: ${SUPPORT_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
   console.log(`💳 PayPal Bot: ${PAYPAL_BOT_TOKEN ? '✅ READY' : '❌ NOT CONFIGURED'}`);
+  console.log(`👑 Admin Panel: http://localhost:${PORT}/admin/payments`);
 });
