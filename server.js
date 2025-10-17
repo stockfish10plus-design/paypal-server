@@ -683,7 +683,7 @@ app.get("/admin/reviews", authMiddleware, async (req, res) => {
 const purchasesFile = path.join(__dirname, "purchases.json");
 if (!fs.existsSync(purchasesFile)) fs.writeFileSync(purchasesFile, "[]", "utf-8");
 
-// 🔥 ИСПРАВЛЕНО: Функция для сохранения покупки в локальный файл
+// 🔥 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Для сохранения покупки в локальный файл
 function savePaymentToLocal(paymentData) {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
@@ -700,6 +700,15 @@ function savePaymentToLocal(paymentData) {
         }
       };
     } else {
+      // 🔥 ИСПРАВЛЕНО: Правильно обрабатываем items с количеством
+      const processedItems = (paymentData.items || []).map(item => ({
+        name: item.name,
+        // 🔥 ВАЖНО: Используем quantity если есть, иначе используем qty
+        quantity: item.quantity || item.qty || 1,
+        price: item.price,
+        subtotal: (item.price * (item.quantity || item.qty || 1)).toFixed(2)
+      }));
+
       // Добавляем новую запись с ВСЕМИ данными
       const localPaymentData = {
         transactionId: paymentData.transactionId,
@@ -712,10 +721,10 @@ function savePaymentToLocal(paymentData) {
         amount: {
           total: paymentData.amount?.total || paymentData.amount,
           currency: paymentData.amount?.currency || 'USD',
-          items: paymentData.amount?.items || paymentData.items?.reduce((sum, item) => sum + (item.price * item.qty), 0) || 0
+          items: paymentData.amount?.items || processedItems.reduce((sum, item) => sum + parseFloat(item.subtotal), 0)
         },
-        // 🔥 ВАЖНО: Сохраняем items полностью
-        items: paymentData.items || [],
+        // 🔥 ВАЖНО: Сохраняем items с правильным количеством
+        items: processedItems,
         timestamps: {
           createdAt: paymentData.timestamps?.createdAt || new Date(),
           updatedAt: new Date()
@@ -741,7 +750,7 @@ function savePaymentToLocal(paymentData) {
   }
 }
 
-// 🔥 ОБНОВЛЕНО: Локальный просмотр платежей с items
+// 🔥 ОБНОВЛЕННЫЙ: Локальный просмотр платежей с правильным отображением количества
 app.get("/local/payments", (req, res) => {
   try {
     const purchases = JSON.parse(fs.readFileSync(purchasesFile, "utf-8"));
@@ -791,7 +800,7 @@ app.get("/local/payments", (req, res) => {
                         formattedDate = date.toLocaleString('ru-RU');
                       }
                       
-                      // 🔥 Форматируем items для отображения
+                      // 🔥 ИСПРАВЛЕНО: Правильно отображаем количество
                       const itemsHtml = payment.items && payment.items.length > 0 
                         ? payment.items.map(item => `
                             <div class="item">
@@ -988,7 +997,7 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// 🔥 ОБНОВЛЕНО: функция сохранения платежа в Firebase
+// 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ: сохранения платежа в Firebase
 async function savePaymentToFirebase(paymentData) {
   if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_PRIVATE_KEY || !db) {
     return { success: false, error: 'Firebase config missing' };
@@ -996,6 +1005,8 @@ async function savePaymentToFirebase(paymentData) {
   
   try {
     const paymentRef = db.collection('payments').doc();
+    
+    // 🔥 ИСПРАВЛЕНО: Правильно обрабатываем количество (используем qty)
     const firebaseData = {
       transactionId: paymentData.transactionId,
       paymentId: paymentData.paymentId,
@@ -1012,7 +1023,7 @@ async function savePaymentToFirebase(paymentData) {
       items: paymentData.items.map((item, index) => ({ 
         id: index + 1, 
         name: item.name, 
-        quantity: item.qty, 
+        quantity: item.qty, // 🔥 ИСПРАВЛЕНО: используем qty из входящих данных
         price: item.price, 
         subtotal: (item.price * item.qty).toFixed(2) 
       })),
